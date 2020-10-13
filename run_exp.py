@@ -14,9 +14,11 @@ Options:
     When not raw:
         --commit <hash>     Check out this commit [default: HEAD]
 """
-from docopt import docopt  # type: ignore
+from docopt import docopt
 from pathlib import Path
-from vsydorov_tools import log as vt_log
+
+from vst import log as vst_log
+
 from dervo import experiment, snippets
 
 if __name__ == '__main__':
@@ -24,7 +26,7 @@ if __name__ == '__main__':
     args = docopt(__doc__)
     # Define proper formatter right away
     loglevel_int: int = snippets.docopt_loglevel(args.get('--log'))
-    log = vt_log.reasonable_logging_setup(loglevel_int, args['--lformat'])
+    log = vst_log.reasonable_logging_setup(loglevel_int, args['--lformat'])
     # Just to outline start of experiments
     log.info('|||-------------------------------------------------------|||')
     log.info('    Start of Dervo experiment. STDOUT loglevel: {}'.format(

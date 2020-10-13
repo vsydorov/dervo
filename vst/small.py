@@ -53,9 +53,6 @@ def get_experiment_id_string():
 
 # //// Context Managers ////
 
-# Backwards compatability
-from vsydorov_tools.log import logging_disabled  # NOQA
-
 
 @contextmanager
 def np_printoptions(*args, **kwargs):
