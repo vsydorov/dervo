@@ -19,7 +19,6 @@ from typing import (Dict, NamedTuple, List, TypeVar, Union, Tuple, # NOQA
         Any, Callable, Iterator)  # NOQA
 
 from vst import small
-from vst import log as vt_log
 
 from dervo import snippets
 
@@ -516,7 +515,7 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     assert isinstance(logging.getLogger().handlers[0],
             logging.StreamHandler), 'First handler should be StreamHandler'
 
-    with vt_log.LogCaptorToRecords(pause_others=True) as lctr:
+    with small.LogCaptorToRecords(pause_others=True) as lctr:
         actual_code_root, output_prefix = _manage_code_checkout(
                 dervo_root, dervo_cfg, co_commit)
 
@@ -530,9 +529,9 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     # Set up logging
     logfolder = snippets.get_work_subfolder(prefixed_workfolder, 'log')
     id_string = small.get_experiment_id_string()
-    logfilename_debug = vt_log.add_filehandler(
+    logfilename_debug = small.add_filehandler(
             logfolder/f'{id_string}.DEBUG.log', logging.DEBUG, 'extended')
-    logfilename_info = vt_log.add_filehandler(
+    logfilename_info = small.add_filehandler(
             logfolder/f'{id_string}.INFO.log', logging.INFO, 'short')
     log.info(inspect.cleandoc(
         f"""Welcome to the logging system!
@@ -575,7 +574,6 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     import vst
     importlib.reload(vst)
     importlib.reload(small)
-    importlib.reload(vt_log)
 
     # Import experiment routine
     module = importlib.import_module(module_str)

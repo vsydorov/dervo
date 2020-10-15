@@ -17,7 +17,7 @@ Options:
 from docopt import docopt
 from pathlib import Path
 
-from vst import log as vst_log
+from vst import small
 
 from dervo import experiment, snippets
 
@@ -26,7 +26,7 @@ if __name__ == '__main__':
     args = docopt(__doc__)
     # Define proper formatter right away
     loglevel_int: int = snippets.docopt_loglevel(args.get('--log'))
-    log = vst_log.reasonable_logging_setup(loglevel_int, args['--lformat'])
+    log = small.reasonable_logging_setup(loglevel_int, args['--lformat'])
     # Just to outline start of experiments
     log.info('|||-------------------------------------------------------|||')
     log.info('    Start of Dervo experiment. STDOUT loglevel: {}'.format(
