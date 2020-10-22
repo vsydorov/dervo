@@ -574,6 +574,7 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     import vst
     importlib.reload(vst)
     importlib.reload(small)
+    importlib.reload(vst.plot)
 
     # Import experiment routine
     module = importlib.import_module(module_str)
