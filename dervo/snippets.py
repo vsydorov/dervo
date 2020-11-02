@@ -191,7 +191,7 @@ def force_symlink(path, linkname, where):
     else:
         for i in range(256):
             try:
-                linkname.symlink_to(where)
+                link_fullpath.symlink_to(where)
                 break
             except (FileExistsError, FileNotFoundError) as e:
                 log.debug('Try {}: Caught {}, trying again'.format(i, e))

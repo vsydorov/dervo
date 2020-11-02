@@ -528,7 +528,7 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     if dervo_cfg['relative_symlinks']:
         symlink_path = Path(os.path.relpath(workfolder, path))
     else:
-        symlink_path = workfolder
+        symlink_path = Path(workfolder)
     symlink_name = dervo_cfg['symlink_prefix']+workfolder.name
     snippets.force_symlink(path, symlink_name, symlink_path)
 
