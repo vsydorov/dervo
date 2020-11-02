@@ -174,12 +174,17 @@ def enumerate_mstring(string, indent=4):
     return '\n'.join(estring)
 
 
-def force_symlink(linkname, where):
-    """ Force symlink creation. If symlink to wrong place - fail """
-    linkname = Path(linkname)
-    if linkname.is_symlink():
-        r_link = linkname.resolve()
-        r_where = where.resolve()
+def force_symlink(path, linkname, where):
+    """
+    Force symlink creation. If symlink to wrong place - fail
+
+    Important to be careful when resolving relative paths
+    """
+    link_fullpath = path/linkname
+    where_fullpath = path/where
+    if link_fullpath.is_symlink():
+        r_link = link_fullpath.resolve()
+        r_where = where_fullpath.resolve()
         assert r_link == r_where, \
                 ('Symlink exists, but points to wrong '
                 'place {} instead of {}').format(r_link, r_where)

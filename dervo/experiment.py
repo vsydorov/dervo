@@ -1,6 +1,7 @@
 """
 Tools related to experiment organization (mostly procedural)
 """
+import os.path
 import inspect
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import (Dict, NamedTuple, List, TypeVar, Union, Tuple, # NOQA
         Any, Callable, Iterator)  # NOQA
 
+import vst
 from vst import small
 
 from dervo import snippets
@@ -38,25 +40,30 @@ DEFAULT_ROOT = '_ROOT'  # Snake looks for ROOT
 EXPERIMENT_PATH = None
 
 DERVO_CFG_DEFAULTS = """
-    # Where the heavy outputs will be stored
+# Where the heavy outputs will be stored
 output_root: ~
 
-    # Where to checkout code to
+# Where to checkout code to
 checkout_root: ~
 
-    # Project from which we launch experiments
+# Project from which we launch experiments
 code_root: ~
 
-    # Run "make" when checking out
+# Run "make" when checking out
 make: False
 
-    # prefix to add to 'run' field when executing experiment code
+# Make symlinks relative (good for portability)
+relative_symlinks: False
+
+symlink_prefix: ''
+
+# prefix to add to 'run' field when executing experiment code
 code_import_prefix: 'pose3d.experiments'
 
-    # prefix to add to <meta_run> argument when executing meta_experiment code
+# prefix to add to <meta_run> argument when executing meta_experiment code
 meta_code_import_prefix: 'pose3d.experiments.meta'
 
-    # Experiment function to be executed
+# Experiment function to be executed
 run: 'empty_run'
 """
 
@@ -126,15 +133,11 @@ def merge_yml_orderly(
     return merged_cfg
 
 
-def get_workfolder_given_path(path, output_root):
+def get_workfolder_given_path(path, root_local, output_root):
     """Create output folder, create symlink to it """
     path = Path(path)
 
-    # Find root w.r.t which we'll name our files
-    long_snake = paternal_snake_query(path, DEFAULT_ROOT)
-    root_local: Path = long_snake[-1][0]
-
-    # Define and create output folder (name defined by relative path)
+    # Create output folder (name defined by relative path wrt root_local)
     output_foldername = str(path.relative_to(root_local)).replace('/', '.')
     workfolder = small.mkdir(Path(output_root)/output_foldername)
     return workfolder, root_local
@@ -469,8 +472,18 @@ def _establish_dervo_configuration(path):
     dervo_cfg, meta_filenames = get_nested_cfg_from_snake(
             cfg_snake, DEFAULT_DERVO_YML_CFG)
     dervo_cfg = snippets.cfg_inherit_defaults(DERVO_CFG_DEFAULTS, dervo_cfg)
+
+    # Find @ROOT w.r.t dervo was launched
+    long_snake = paternal_snake_query(path, DEFAULT_ROOT)
+    root_local: Path = long_snake[-1][0]
+    # Replace relative roots
+    for k, v in list(dervo_cfg.items()):
+        if '_root' in k and v.startswith('@ROOT'):
+            dervo_cfg[k] = os.path.abspath(v.replace(
+                '@ROOT', str(root_local.resolve())))
+
     workfolder, root_local = get_workfolder_given_path(
-            path, dervo_cfg['output_root'])
+            path, root_local, dervo_cfg['output_root'])
     return cfg_snake, dervo_cfg, workfolder, root_local
 
 
@@ -510,7 +523,14 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     """
     cfg_snake, dervo_cfg, workfolder, root_local = \
             _establish_dervo_configuration(path)
-    snippets.force_symlink(path/workfolder.name, workfolder)  # Vital
+
+    # Vital symlink logic
+    if dervo_cfg['relative_symlinks']:
+        symlink_path = Path(os.path.relpath(workfolder, path))
+    else:
+        symlink_path = workfolder
+    symlink_name = dervo_cfg['symlink_prefix']+workfolder.name
+    snippets.force_symlink(path, symlink_name, symlink_path)
 
     assert isinstance(logging.getLogger().handlers[0],
             logging.StreamHandler), 'First handler should be StreamHandler'
@@ -682,7 +702,7 @@ def grab(
     """
     log.info(f'<<< BEGIN GLUE (grab). Grab: {rel_path} @ {path}')
     # Dervo configuration allows us to look up workfolder
-    with vt_log.logging_disabled(logging.INFO):
+    with vst.logging_disabled(logging.INFO):
         cfg_snake, dervo_cfg, workfolder, root_local = \
                 _establish_dervo_configuration(Path(path))
     # Try to find requested path
