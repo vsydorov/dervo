@@ -1,6 +1,7 @@
 """
 Tools related to experiment organization (mostly procedural)
 """
+import copy
 import os.path
 import inspect
 import subprocess
@@ -465,6 +466,26 @@ def _manage_code_checkout(dervo_root, dervo_cfg, co_commit):
     return actual_code_root, output_prefix
 
 
+def cfg_replace_prefix(cfg, root_local, PREFIX='DERVO@ROOT'):
+    # A hacky thing that replaces @DERVO_ROOT prefix with root_local
+    cf = snippets.flatten_nested_dict(cfg, '', '.')
+    updates_to_make = {}
+    for k, v in list(cf.items()):
+        if isinstance(v, str) and v.startswith(PREFIX):
+            updates_to_make[k] = os.path.abspath(v.replace(
+                'DERVO@ROOT', str(root_local.resolve())))
+
+    if len(updates_to_make):
+        cfg = copy.deepcopy(cfg)
+        S = '\n'.join(f'{dot_key}: {cf[dot_key]} <-- {v}'
+            for dot_key, v in updates_to_make.items())
+        S = snippets.indent_mstring(S, 4)
+        log.info(f'Dervo prefix replacements to be done:\n{S}')
+        for dot_key, v in updates_to_make.items():
+            snippets.set_dd(cfg, dot_key, v)
+    return cfg
+
+
 def _establish_dervo_configuration(path):
     # // Define dervo configuration
     # Where to save outputs, which code to access, etc
@@ -476,12 +497,8 @@ def _establish_dervo_configuration(path):
     # Find @ROOT w.r.t dervo was launched
     long_snake = paternal_snake_query(path, DEFAULT_ROOT)
     root_local: Path = long_snake[-1][0]
-    # Replace relative roots
-    for k, v in list(dervo_cfg.items()):
-        if '_root' in k and v.startswith('@ROOT'):
-            dervo_cfg[k] = os.path.abspath(v.replace(
-                '@ROOT', str(root_local.resolve())))
 
+    dervo_cfg = cfg_replace_prefix(dervo_cfg, root_local)
     workfolder, root_local = get_workfolder_given_path(
             path, root_local, dervo_cfg['output_root'])
     return cfg_snake, dervo_cfg, workfolder, root_local
@@ -579,6 +596,7 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     # Whole configuration reconstructed here
     log.info('- { GET_CFG: Parse experiment configuration')
     cfg = get_configuration_py_yml_given_snake(cfg_snake)
+    cfg = cfg_replace_prefix(cfg, root_local)
     log.info('- } GET_CFG: Parse experiment configuration')
 
     # Save final config to the output folder
