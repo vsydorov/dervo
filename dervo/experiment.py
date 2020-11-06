@@ -609,10 +609,13 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
 
     # Unload caches, to allow local version (if present) to take over
     importlib.invalidate_caches()
-    import vst
+    # Reload vst, then submodules, then vst again (to allow __init__ imports)
+    # https://stackoverflow.com/questions/35640590/how-do-i-reload-a-python-submodule/51074507#51074507
     importlib.reload(vst)
-    importlib.reload(small)
-    importlib.reload(vst.plot)
+    for k, v in list(sys.modules.items()):
+        if k.startswith('vst'):
+            log.debug(f'Reload {k} {v}')
+            importlib.reload(v)
 
     # Import experiment routine
     module = importlib.import_module(module_str)
