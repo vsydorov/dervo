@@ -3,3 +3,4 @@
 OAR.*
 *.cprof
 *.lprof
+slurm-*
