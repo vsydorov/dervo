@@ -160,12 +160,11 @@ def prepare_updates_to_yml_given_py(cfg, py_hierarchy, snake_head):
         with python_file.open() as f:
             # script += '\n'
             script += f'# LVL {lvl}\n'
-            script += f'path = Path("{python_file.parent}")\n'
-            # script += f'path = Path("{python_file.parent}")  # LVL {lvl}\n'
+            script += f'epath = Path("{python_file.parent}")\n'
             script += f.read()
     # script += f'\nexp_path = Path("{snake_head}")  # Experiment folder\n'
     script += '# Experiment folder\n'
-    script += f'exp_path = Path("{snake_head}")\n'
+    script += f'epath = Path("{snake_head}")\n'
 
     code = compile(script, '<cfg_script>', 'exec')
 
@@ -489,6 +488,7 @@ def cfg_replace_prefix(cfg, root_local, PREFIX='DERVO@ROOT'):
 def _establish_dervo_configuration(path):
     # // Define dervo configuration
     # Where to save outputs, which code to access, etc
+    path = path.resolve()
     cfg_snake = paternal_snake_query(path, DEFAULT_ROOT)
     dervo_cfg, meta_filenames = get_nested_cfg_from_snake(
             cfg_snake, DEFAULT_DERVO_YML_CFG)
@@ -712,25 +712,33 @@ def run_meta_experiment(dervo_root, path, meta_run,
 # // GLUE
 # Glue functions are allowed to be called by cfg.py files
 
-
-def grab(
+def anygrab(
         path: Union[Path, str],
         rel_path: str,
+        commit: str = None,
         must_exist=True) -> str:
     """
     Glue. Find absolute path to workfolder of another experiment, append
     rel_path to it, makes sure file exists.
     """
-    log.info(f'<<< BEGIN GLUE (grab). Grab: {rel_path} @ {path}')
+    log.info(f'<<< BEGIN GLUE (anygrab). Grab: {rel_path} @ {commit} @ {path}')
     # Dervo configuration allows us to look up workfolder
     with vst.logging_disabled(logging.INFO):
         cfg_snake, dervo_cfg, workfolder, root_local = \
                 _establish_dervo_configuration(Path(path))
-    # Try to find requested path
-    item_to_find = workfolder/rel_path
+    # Resolve commit
+    if commit is None:
+        subfolders = list(workfolder.iterdir())
+        if not len(subfolders):
+            raise RuntimeError('Anygrab fail: no commit subfolders')
+        commitfolder = subfolders[0]
+    else:
+        commitfolder = workfolder/commit
+    # Now get the item
+    item_to_find = commitfolder/rel_path
     if must_exist and not item_to_find.exists():
         raise FileNotFoundError(f'Could not grab from {item_to_find}')
-    log.info('>>> END GLUE (grab). Grabbed {}'.format(item_to_find))
+    log.info('>>> END GLUE (anygrab). Grabbed {}'.format(item_to_find))
     return str(item_to_find)
 
 
