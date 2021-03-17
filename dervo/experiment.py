@@ -21,7 +21,6 @@ from typing import (Dict, NamedTuple, List, TypeVar, Union, Tuple, # NOQA
         Any, Callable, Iterator)  # NOQA
 
 import vst
-from vst import small
 
 from dervo import snippets
 
@@ -71,24 +70,36 @@ run: 'empty_run'
 # // Experimental tools
 # //// Snakes and other tools for wandering around filesystem
 
+# <HHHHHHHH(:)-<
+# Snake goes [deepest] --> [shallowest]
+Snake = List[Tuple[Path, List[str]]]
 
-def paternal_snake_query(path, filename) -> List[Tuple[Path, List[str]]]:
+def create_ascending_snake(path, stop_filename) -> Snake:
     """
-    Starting for 'path' we ascend the filesystem tree until we hit a folder
-    containing 'filename' or filesystem root. We record directory contents.
-    Snake goes [deepest] --> [shallowest]
+    - Starting from 'path' ascend the filesystem tree
+      - Stop when we hit a folder containing 'stop_filename'
+    - Record directory contents into a Snake
     """
     snake = []  # type: List[Tuple[Path, List[str]]]
     for dir in itertools.chain([path], path.parents):
         files = [x.name for x in dir.iterdir()]
         snake.append((dir, files))
-        if (filename in files):
+        if (stop_filename in files):
             break
     return snake
 
 
+def match_snake(
+        snake: Snake, match: str, reverse=True):
+    # Get matching filenames from the snake
+    filepaths = [path/match for path, files in snake if match in files]
+    if reverse:
+        filepaths = filepaths[::-1]
+    return filepaths
+
+
 def stop_snake(
-        snake: List[Tuple[Path, List[str]]],
+        snake: Snake,
         snake_stoppper: str):
     stopped_snake = []
     for path, files in snake:
@@ -100,30 +111,13 @@ def stop_snake(
     return stopped_snake
 
 
-def get_matching_filenames_from_snake(
-        snake: List[Tuple[Path, List[str]]],
-        filename: str):
-    return [path/filename
-            for path, files in snake
-            if filename in files]
-
-
-def get_nested_cfg_from_snake(
-        snake: List[Tuple[Path, List[str]]],
-        cfgname: str):
+def merged_yml_from_paths(yml_paths: Iterator[Path]):
     """
-    (YML) Search snake for 'cfgname' and do nested merge of the results
+    Reads yml files, merges them.
+    Returns {} if iterator is empty
     """
-    yml_filenames_ordered = get_matching_filenames_from_snake(
-            snake, cfgname)[::-1]  # Deepest to shallowest
-    return merge_yml_orderly(yml_filenames_ordered), yml_filenames_ordered
-
-
-def merge_yml_orderly(
-        yml_filenames_ordered: Iterator[Path]):
-    """Returns {} if iterator is empty"""
     merged_cfg = None
-    for filename in yml_filenames_ordered:
+    for filename in yml_paths:
         with filename.open('r') as f:
             cfg = yaml.safe_load(f)
         # Empty file ->  empty dicts, not "None"
@@ -140,7 +134,7 @@ def get_workfolder_given_path(path, root_local, output_root):
 
     # Create output folder (name defined by relative path wrt root_local)
     output_foldername = str(path.relative_to(root_local)).replace('/', '.')
-    workfolder = small.mkdir(Path(output_root)/output_foldername)
+    workfolder = vst.mkdir(Path(output_root)/output_foldername)
     return workfolder, root_local
 
 
@@ -208,35 +202,6 @@ def prepare_updates_to_yml_given_py(cfg, py_hierarchy, snake_head):
     return py_updates
 
 
-def get_configuration_yml_given_snake(
-        snake: List[Tuple[Path, List[str]]],
-            ):
-    """
-    Reconstruct part of configuration by processing only yml files
-    """
-    # Load YML
-    cfg, yml_filenames = get_nested_cfg_from_snake(snake, DEFAULT_YML_CFG)
-    log.info('Such yml configs were merged:')
-    for level, path in enumerate(yml_filenames):
-        log.info('  {} - {}'.format(level, path))
-
-    log.debug('Partial config (only YML):\n{}'.format(
-        snippets.indent_mstring(pprint.pformat(cfg), 4)))
-
-    return cfg
-
-
-def get_configuration_yml_output_given_snake(
-        snake: List[Tuple[Path, List[str]]],
-            ):
-    """
-    Reconstruct part of configuration by processing only yml files
-    """
-    # Load YML
-    cfg, yml_filenames = get_nested_cfg_from_snake(snake, DEFAULT_YML_CFG)
-    return cfg['outputs']
-
-
 def get_configuration_py_yml_given_snake(
         snake: List[Tuple[Path, List[str]]],
             ):
@@ -246,8 +211,9 @@ def get_configuration_py_yml_given_snake(
     # Load YML
     log.info('-- {{ Merge YML configurations')
     yml_cfg_snake = stop_snake(snake, DEFAULT_SNAKE_STOPPER_YML_CFG)
-    cfg, yml_filenames = get_nested_cfg_from_snake(
-            yml_cfg_snake, DEFAULT_YML_CFG)
+
+    yml_filenames = match_snake(yml_cfg_snake, DEFAULT_YML_CFG)
+    cfg = merged_yml_from_paths(yml_filenames)
     YML_MERGE_LEVELS = '\n'.join([
         f'{level}\t{path}'
         for level, path in enumerate(yml_filenames)])
@@ -262,8 +228,7 @@ def get_configuration_py_yml_given_snake(
     # {{ PY updates to YML
     log.info('-- {{ Merge PY code, Update YML with PY')
     py_cfg_snake = stop_snake(snake, DEFAULT_SNAKE_STOPPER_PY_CFG)
-    py_filenames = get_matching_filenames_from_snake(
-            py_cfg_snake, DEFAULT_PY_CFG)[::-1]
+    py_filenames = match_snake(py_cfg_snake, DEFAULT_PY_CFG)
     PY_MERGE_LEVELS = '\n'.join([
         f'{level}\t{path}'
         for level, path in enumerate(py_filenames)])
@@ -332,7 +297,7 @@ def co_repo_check(co_repo_fold: Path, co_commit_sha: str):
 
 def co_repo_create(repo, co_repo_fold, co_commit_sha, run_make):
     # Create nice repo folder
-    small.mkdir(co_repo_fold)
+    vst.mkdir(co_repo_fold)
     repo.git.clone('--recursive', '--shared', '.', co_repo_fold)
     # Checkout proper commit
     co_repo = git.Repo(str(co_repo_fold))
@@ -451,8 +416,8 @@ def _manage_code_checkout(dervo_root, dervo_cfg, co_commit):
 
     checkout_root = dervo_cfg['checkout_root']
     if checkout_root is None:
-        checkout_root = dervo_root/'temp'
-        log.warning('Checkout root not specified, using dervo temp')
+        checkout_root = Path('checkout_temp').resolve()
+        log.warning('Checkout root not specified -, using dervo temp')
     else:
         checkout_root = Path(checkout_root)
 
@@ -486,17 +451,17 @@ def cfg_replace_prefix(cfg, root_local, PREFIX='DERVO@ROOT'):
 
 
 def _establish_dervo_configuration(path):
-    # // Define dervo configuration
-    # Where to save outputs, which code to access, etc
-    path = path.resolve()
-    cfg_snake = paternal_snake_query(path, DEFAULT_ROOT)
-    dervo_cfg, meta_filenames = get_nested_cfg_from_snake(
-            cfg_snake, DEFAULT_DERVO_YML_CFG)
-    dervo_cfg = snippets.cfg_inherit_defaults(DERVO_CFG_DEFAULTS, dervo_cfg)
+    """
+    Define dervo configuration
+    - Where to save outputs, which code to access, etc
+    """
+    root_snake: Snake = create_ascending_snake(path, DEFAULT_ROOT)
+    root_local: Path = root_snake[-1][0]  # @ROOT w.r.t dervo was launched
 
-    # Find @ROOT w.r.t dervo was launched
-    long_snake = paternal_snake_query(path, DEFAULT_ROOT)
-    root_local: Path = long_snake[-1][0]
+    yml_paths = match_snake(root_snake, DEFAULT_DERVO_YML_CFG)
+    dervo_cfg = merged_yml_from_paths(yml_paths)
+    import pudb; pudb.set_trace()  # XXX BREAKPOINT
+    dervo_cfg = snippets.cfg_inherit_defaults(DERVO_CFG_DEFAULTS, dervo_cfg)
 
     dervo_cfg = cfg_replace_prefix(dervo_cfg, root_local)
     workfolder, root_local = get_workfolder_given_path(
@@ -527,17 +492,17 @@ def _handle_experiment_error(err):
     raise err
 
 
-def run_experiment(dervo_root, path, add_args, co_commit: str = None):
+def run_experiment(path, add_args, co_commit: str = None):
     """
     Executes the Dervo experiment
     Args:
-        - 'dervo_root' points to root directory of dervo
         - 'path' points to an experiment cfg folder.
-            - Folder structure found defines experiment
+            - Folder structure found defines the experiment
         - 'add_args' are passed additionally to experiment
         - 'co_commit' if not None will check out a specific version of code and
           operate on that code
     """
+    path = path.resolve()
     cfg_snake, dervo_cfg, workfolder, root_local = \
             _establish_dervo_configuration(path)
 
@@ -552,12 +517,12 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
     assert isinstance(logging.getLogger().handlers[0],
             logging.StreamHandler), 'First handler should be StreamHandler'
 
-    with small.LogCaptorToRecords(pause_others=True) as lctr:
+    with vst.LogCaptorToRecords(pause_others=True) as lctr:
         actual_code_root, output_prefix = _manage_code_checkout(
                 dervo_root, dervo_cfg, co_commit)
 
     # Cleanly separate outputs per commit sha
-    prefixed_workfolder = small.mkdir(workfolder/output_prefix)
+    prefixed_workfolder = vst.mkdir(workfolder/output_prefix)
 
     # Find proper experiment routine
     module_str, experiment_str = get_module_experiment_str(
@@ -565,10 +530,10 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
 
     # Set up logging
     logfolder = snippets.get_work_subfolder(prefixed_workfolder, 'log')
-    id_string = small.get_experiment_id_string()
-    logfilename_debug = small.add_filehandler(
+    id_string = vst.get_experiment_id_string()
+    logfilename_debug = vst.add_filehandler(
             logfolder/f'{id_string}.DEBUG.log', logging.DEBUG, 'extended')
-    logfilename_info = small.add_filehandler(
+    logfilename_info = vst.add_filehandler(
             logfolder/f'{id_string}.INFO.log', logging.INFO, 'short')
     log.info(inspect.cleandoc(
         f"""Welcome to the logging system!
@@ -580,7 +545,7 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
         Root (local): \t\t{root_local}
         Actual code root: \t{actual_code_root}
         --- Python --
-        VENV:\t\t\t{small.is_venv()}
+        VENV:\t\t\t{vst.is_venv()}
         Prefix:\t\t\t{sys.prefix}
         --- Code ---
         Module: \t\t{module_str}
@@ -630,83 +595,6 @@ def run_experiment(dervo_root, path, add_args, co_commit: str = None):
         experiment_routine(prefixed_workfolder, cfg, add_args)
     except Exception as err:
         _handle_experiment_error(err)
-
-
-def run_meta_experiment(dervo_root, path, meta_run,
-        add_args, co_commit: str = None):
-    """
-    Executes the Dervo META experiment (EXPERIMENTAL)
-        META experiment is executed on top of existing experiments and
-        provides useful utilities like visualization
-
-    Args:
-        - 'dervo_root' points to root directory of dervo
-        - 'path' points to an experiment cfg folder.
-            - Folder structure found defines experiment
-        - 'meta_run' meta-function to be run on top of experiment
-        - 'add_args' are passed additionally to experiment
-        - 'co_commit' if not None will check out a specific version of code and
-          operate on that code
-    """
-    raise NotImplementedError('Meta experiment unsupported for now')
-
-    # # // Find out about experiment we are running on top of
-    # log.info('Running a META Experiment')
-    # cfg_snake, dervo_cfg, workfolder, root_local = \
-    #         _establish_dervo_configuration(path)
-    # snippets.force_symlink(path/workfolder.name, workfolder)
-    #
-    # # Capture loglevel equal to first handler (should be streamhandler)
-    # first_handler = logging.getLogger().handlers[0]
-    # assert isinstance(first_handler, logging.StreamHandler), \
-    #         'First handler should be StreamHandler'
-    # with small.LoggingCapturer(first_handler.level) as lcap:
-    #     actual_code_root, output_prefix = _manage_code_checkout(
-    #             dervo_root, dervo_cfg, co_commit)
-    #
-    # # Cleanly separate outputs per commit sha
-    # prefixed_workfolder = small.mkdir(workfolder/output_prefix)
-    #
-    # # Set up logging (put 'meta' logging into the 'log/meta')
-    # logfolder = small.mkdir(small.get_work_subfolder(
-    #         prefixed_workfolder, 'log')/'meta')
-    # logfilename = organize.set_filehandler_given_folder_and_time(logfolder)
-    # log.info('-- {{ META Experiment info --')
-    # log.info(f'Started logging into {logfilename}')
-    # log.info(f'Meta Experiment (on top) of path: {path}')
-    # log.info(f'Workfolder path: {prefixed_workfolder}')
-    # log.info(f'Root (local): {root_local}')
-    # log.info(f'Actual code root: {actual_code_root}')
-    # log.info(f'Checkout info:\n{lcap.captured.strip()}')
-    # log.info(organize.platform_info())
-    # log.info('-- }} META Experiment info --')
-    #
-    # # Whole configuration reconstructed here
-    # log.info('-- {{ Obtaining experiment configuration --')
-    # cfg = get_configuration_py_yml_given_snake(cfg_snake)
-    # log.info('-- }} Obtaining experiment configuration --')
-    #
-    # # Extend pythonpath to allow importing certain modules
-    # sys.path.append(str(actual_code_root))
-    #
-    # # // Find proper routines (experiment and meta-experiment)
-    # # What routine does this experiment normally run?
-    # module_experiment_str = '.'.join(get_module_experiment_str(
-    #     dervo_cfg['run'], dervo_cfg['code_import_prefix']))
-    # # What meta routine should we run
-    # meta_module_str, meta_experiment_str = get_module_experiment_str(meta_run,
-    #         dervo_cfg['meta_code_import_prefix'])
-    #
-    # # Import metaexperiment routine
-    # meta_module = importlib.import_module(meta_module_str)
-    # meta_experiment_routine = getattr(meta_module, meta_experiment_str)
-    #
-    # # Execute metaexperiment routine
-    # try:
-    #     meta_experiment_routine(prefixed_workfolder,
-    #             cfg, module_experiment_str, add_args)
-    # except Exception as err:
-    #     _handle_experiment_error(err)
 
 
 # // GLUE
