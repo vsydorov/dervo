@@ -15,7 +15,6 @@ Options:
         --commit <hash>     Check out this commit [default: HEAD]
 """
 from docopt import docopt
-from pathlib import Path
 
 import vst
 

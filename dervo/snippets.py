@@ -5,16 +5,11 @@ import subprocess
 import logging
 import platform
 import math
-import yaml
-import numpy as np
-import collections
 
 from pathlib import Path
 from typing import (  # NOQA
         Union, Any, NamedTuple, List, Tuple, Callable, TypeVar, Iterator,
         Iterable, Sequence)
-
-from vst import small
 
 
 log = logging.getLogger(__name__)
@@ -60,20 +55,6 @@ def platform_info():
     return platform_string
 
 
-def set_dd(d, key, value, sep='.', soft=False):
-    """Dynamic assignment to nested dictionary
-    http://stackoverflow.com/questions/21297475/set-a-value-deep-in-a-dict-dynamically"""
-    dd = d
-    keys = key.split(sep)
-    latest = keys.pop()
-    for k in keys:
-        dd = dd.setdefault(k, {})
-    if soft:
-        dd.setdefault(latest, value)
-    else:
-        dd[latest] = value
-
-
 def gir_merge_dicts(user, default):
     """Girschik's dict merge from F-RCNN python implementation"""
     if isinstance(user, dict) and isinstance(default, dict):
@@ -83,24 +64,6 @@ def gir_merge_dicts(user, default):
             else:
                 user[k] = gir_merge_dicts(user[k], v)
     return user
-
-
-def flatten_nested_dict(d, parent_key='', sep='.'):
-    items = []
-    for k, v in d.items():
-        new_key = parent_key + sep + k if parent_key else k
-        if isinstance(v, collections.MutableMapping):
-            items.extend(flatten_nested_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-
-
-def unflatten_nested_dict(flat_dict, sep='.'):
-    nested = {}
-    for k, v in flat_dict.items():
-        set_dd(nested, k, v, sep)
-    return nested
 
 
 def indent_mstring(string, indent=4):
@@ -130,7 +93,7 @@ def force_symlink(path, linkname, where):
         r_link = link_fullpath.resolve()
         r_where = where_fullpath.resolve()
         assert r_link == r_where, \
-                ('Symlink exists, but points to wrong '
+                ('Symlink exists, but points to a wrong '
                 'place {} instead of {}').format(r_link, r_where)
     else:
         for i in range(256):
@@ -141,21 +104,3 @@ def force_symlink(path, linkname, where):
                 log.debug('Try {}: Caught {}, trying again'.format(i, e))
             finally:
                 log.debug('Managed at try {}'.format(i))
-
-
-def get_work_subfolder(
-        workfolder,
-        subfolder,
-        allowed_work_subfolders=['out', 'vis', 'temp', 'log']):
-    """ Check if allowed name, create if missing """
-
-    if str(subfolder) not in allowed_work_subfolders:
-        raise ValueError('Subfolder not allowed {}'.format(subfolder))
-    subfolder_path = workfolder/subfolder
-    return small.mkdir(subfolder_path)
-
-
-def get_work_subfolders(workfolder):
-    out = get_work_subfolder(workfolder, 'out')
-    temp = get_work_subfolder(workfolder, 'temp')
-    return out, temp

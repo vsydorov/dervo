@@ -21,6 +21,7 @@ from typing import (Dict, NamedTuple, List, TypeVar, Union, Tuple, # NOQA
         Any, Callable, Iterator)  # NOQA
 
 import vst
+from vst.exp import (unflatten_nested_dict, flatten_nested_dict, set_dd)
 
 from dervo import snippets
 
@@ -67,7 +68,7 @@ meta_code_import_prefix: 'pose3d.experiments.meta'
 run: 'empty_run'
 """
 
-# / Snakes  <HHHHHHHH(:)-<
+# / Snake  <HHHHHHHH(:)-<
 
 # Snake goes [deepest] --> [shallowest]
 Snake = List[Tuple[Path, List[str]]]
@@ -141,15 +142,15 @@ def merged_yml_from_paths(yml_paths: Iterator[Path]):
         merged_cfg = {}
     return merged_cfg
 
+# Rest of configurations
 
-def get_workfolder_given_path(path, root_local, output_root):
+
+def get_workfolder_given_path(path, root_dervo, output_root):
     """Create output folder, create symlink to it """
-    path = Path(path)
-
-    # Create output folder (name defined by relative path wrt root_local)
-    output_foldername = str(path.relative_to(root_local)).replace('/', '.')
-    workfolder = vst.mkdir(Path(output_root)/output_foldername)
-    return workfolder, root_local
+    # Create output folder (name defined by relative path wrt root_dervo)
+    output_foldername = str(path.relative_to(root_dervo)).replace('/', '.')
+    workfolder = vst.mkdir(output_root/output_foldername)
+    return workfolder
 
 
 def prepare_updates_to_yml_given_py(cfg, py_hierarchy, snake_head):
@@ -189,7 +190,7 @@ def prepare_updates_to_yml_given_py(cfg, py_hierarchy, snake_head):
         log.info('--- }}} EXEC py_code')
 
     # Finding missing values in CFG and replacing with local scope variables
-    cf = snippets.flatten_nested_dict(cfg, '', '.')
+    cf = flatten_nested_dict(cfg, '', '.')
     updates_to_eval = {}
     for dot_key, value in cf.items():
         if not isinstance(value, str):
@@ -252,7 +253,7 @@ def get_configuration_py_yml_given_snake(
     updates_to_make = prepare_updates_to_yml_given_py(
             cfg, py_filenames, snake[0][0])
     for dot_key, value in updates_to_make.items():
-        snippets.set_dd(cfg, dot_key, value)
+        set_dd(cfg, dot_key, value)
     # }} PY updates to YML
     log.info('-- }} Merge PY code, Update YML with PY')
 
@@ -421,7 +422,7 @@ def decide_actual_code_root(
     return actual_code_root, output_prefix
 
 
-def _manage_code_checkout(dervo_root, dervo_cfg, co_commit):
+def _manage_code_checkout(dervo_cfg, co_commit):
     # // Managing code (wrt git commits), obtaining well formed prefix
     log.info('-- {{ Code checkout')
     code_root = Path(dervo_cfg['code_root'])
@@ -444,43 +445,40 @@ def _manage_code_checkout(dervo_root, dervo_cfg, co_commit):
     return actual_code_root, output_prefix
 
 
-def cfg_replace_prefix(cfg, root_local, PREFIX='DERVO@ROOT'):
-    # A hacky thing that replaces @DERVO_ROOT prefix with root_local
-    cf = snippets.flatten_nested_dict(cfg, '', '.')
+def cfg_replace_prefix(cfg, root_dervo, PREFIX='DERVO@ROOT'):
+    # A hacky thing that replaces @DERVO_ROOT prefix with root_dervo
+    cf = flatten_nested_dict(cfg, '', '.')
     updates_to_make = {}
     for k, v in list(cf.items()):
         if isinstance(v, str) and v.startswith(PREFIX):
             updates_to_make[k] = os.path.abspath(v.replace(
-                'DERVO@ROOT', str(root_local.resolve())))
-
+                'DERVO@ROOT', str(root_dervo.resolve())))
     if len(updates_to_make):
-        cfg = copy.deepcopy(cfg)
-        S = '\n'.join(f'{dot_key}: {cf[dot_key]} <-- {v}'
-            for dot_key, v in updates_to_make.items())
-        S = snippets.indent_mstring(S, 4)
-        log.info(f'Dervo prefix replacements to be done:\n{S}')
-        for dot_key, v in updates_to_make.items():
-            snippets.set_dd(cfg, dot_key, v)
+        log.info('Dervo prefix replacements:\n{}'.format(
+            snippets.indent_mstring(pprint.pformat(updates_to_make), 4)))
+        cf.update(updates_to_make)
+        cfg = unflatten_nested_dict(cf)
     return cfg
 
 
-def _establish_dervo_configuration(path):
+def _establish_dervo_configuration(path: Path):
     """
     Define dervo configuration
     - Where to save outputs, which code to access, etc
     """
-    root_snake: Snake = create_ascending_snake(path, DEFAULT_ROOT)
-    root_local: Path = root_snake[-1][0]  # @ROOT w.r.t dervo was launched
+    path = path.resolve()
+    snake: Snake = create_ascending_snake(path, DEFAULT_ROOT)
+    root_dervo: Path = snake[-1][0]  # @ROOT w.r.t dervo was launched
 
-    yml_paths = match_snake(root_snake, DEFAULT_DERVO_YML_CFG)
+    yml_paths = match_snake(snake, DEFAULT_DERVO_YML_CFG)
     cfgs = [yml_from_file(f) for f in yml_paths]
     cfgs = [yml_load(DERVO_CFG_DEFAULTS), ] + cfgs
     dervo_cfg = yml_list_merge(cfgs)
-    dervo_cfg = cfg_replace_prefix(dervo_cfg, root_local)
+    dervo_cfg = cfg_replace_prefix(dervo_cfg, root_dervo)
 
-    workfolder, root_local = get_workfolder_given_path(
-            path, root_local, dervo_cfg['output_root'])
-    return cfg_snake, dervo_cfg, workfolder, root_local
+    workfolder = get_workfolder_given_path(
+            path, root_dervo, Path(dervo_cfg['output_root']))
+    return snake, dervo_cfg, workfolder, root_dervo
 
 
 def get_module_experiment_str(
@@ -517,7 +515,7 @@ def run_experiment(path, add_args, co_commit: str = None):
           operate on that code
     """
     path = path.resolve()
-    cfg_snake, dervo_cfg, workfolder, root_local = \
+    snake, dervo_cfg, workfolder, root_dervo = \
             _establish_dervo_configuration(path)
 
     # Vital symlink logic
@@ -533,17 +531,17 @@ def run_experiment(path, add_args, co_commit: str = None):
 
     with vst.LogCaptorToRecords(pause_others=True) as lctr:
         actual_code_root, output_prefix = _manage_code_checkout(
-                dervo_root, dervo_cfg, co_commit)
+                dervo_cfg, co_commit)
 
     # Cleanly separate outputs per commit sha
-    prefixed_workfolder = vst.mkdir(workfolder/output_prefix)
+    workfolder_w_commit = vst.mkdir(workfolder/output_prefix)
 
     # Find proper experiment routine
     module_str, experiment_str = get_module_experiment_str(
             dervo_cfg['run'], dervo_cfg['code_import_prefix'])
 
     # Set up logging
-    logfolder = snippets.get_work_subfolder(prefixed_workfolder, 'log')
+    logfolder = vst.mkdir(workfolder_w_commit/'log')
     id_string = vst.get_experiment_id_string()
     logfilename_debug = vst.add_filehandler(
             logfolder/f'{id_string}.DEBUG.log', logging.DEBUG, 'extended')
@@ -555,8 +553,8 @@ def run_experiment(path, add_args, co_commit: str = None):
         Debug file: \t\t{logfilename_debug}
         Info file: \t\t{logfilename_info}
         Experiment path: \t{path}
-        Workfolder path: \t{prefixed_workfolder}
-        Root (local): \t\t{root_local}
+        Workfolder path: \t{workfolder_w_commit}
+        Root (local): \t\t{root_dervo}
         Actual code root: \t{actual_code_root}
         --- Python --
         VENV:\t\t\t{vst.is_venv()}
@@ -574,13 +572,13 @@ def run_experiment(path, add_args, co_commit: str = None):
 
     # Whole configuration reconstructed here
     log.info('- { GET_CFG: Parse experiment configuration')
-    cfg = get_configuration_py_yml_given_snake(cfg_snake)
-    cfg = cfg_replace_prefix(cfg, root_local)
+    cfg = get_configuration_py_yml_given_snake(snake)
+    cfg = cfg_replace_prefix(cfg, root_dervo)
     log.info('- } GET_CFG: Parse experiment configuration')
 
     # Save final config to the output folder
     # TODO: Warn if changed from last time
-    with (prefixed_workfolder/'final_config.cfg').open('w') as f:
+    with (workfolder_w_commit/'final_config.cfg').open('w') as f:
         print(yaml.dump(cfg, default_flow_style=False), file=f)
 
     # Extend pythonpath to allow importing certain modules
@@ -606,7 +604,7 @@ def run_experiment(path, add_args, co_commit: str = None):
 
     # Execute experiment routine
     try:
-        experiment_routine(prefixed_workfolder, cfg, add_args)
+        experiment_routine(workfolder_w_commit, cfg, add_args)
     except Exception as err:
         _handle_experiment_error(err)
 
@@ -626,7 +624,7 @@ def anygrab(
     log.info(f'<<< BEGIN GLUE (anygrab). Grab: {rel_path} @ {commit} @ {path}')
     # Dervo configuration allows us to look up workfolder
     with vst.logging_disabled(logging.INFO):
-        cfg_snake, dervo_cfg, workfolder, root_local = \
+        snake, dervo_cfg, workfolder, root_dervo = \
                 _establish_dervo_configuration(Path(path))
     # Resolve commit
     if commit is None:
@@ -676,7 +674,7 @@ def get_tags(path):
 
 
 def print_flat_cfg_and_levels(cfg, yml_hierarchy, py_hierarchy):
-    flat0 = snippets.flatten_nested_dict(cfg, '', '.')
+    flat0 = flatten_nested_dict(cfg, '', '.')
 
     # Record level to display later
     importlevel = {}
@@ -686,7 +684,7 @@ def print_flat_cfg_and_levels(cfg, yml_hierarchy, py_hierarchy):
         # Empty file -> empty dict, not "None"
         cfg_ = {} if cfg_ is None else cfg_
 
-        for k, v in snippets.flatten_nested_dict(cfg_, '', '.').items():
+        for k, v in flatten_nested_dict(cfg_, '', '.').items():
             importlevel[k] = level
 
     # Fancy display
