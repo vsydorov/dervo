@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dervo 0.004
+Dervo 0.005
 Runs one of the experiments in the exp folder
 
 Usage:

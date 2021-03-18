@@ -108,62 +108,6 @@ def indent_mstring(string, indent=4):
     return '\n'.join(map(lambda x: ' '*indent+x, string.split('\n')))
 
 
-def cfg_inherit_defaults(str_default, cfg, strict=False):
-    """
-    Universal function for setting up default configurations
-    """
-    cf = flatten_nested_dict(cfg)
-    cf_default = flatten_nested_dict(yaml.safe_load(str_default))
-
-    keys_cf = np.array(list(cf.keys()))
-    keys_cf_default = np.array(list(cf_default.keys()))
-
-    BAD_STUFF = []
-    DEFAULTS_ASSIGNED = []
-
-    # Are there new keys that were not present in default?
-    keys_without_defaults = keys_cf[~np.in1d(keys_cf, keys_cf_default)]
-    if len(keys_without_defaults):
-        with small.np_printoptions(linewidth=256):
-            BAD_STUFF.append(
-                    '    Config keys {} are missing default values'.format(
-                        keys_without_defaults))
-
-    # Are there defaults that are not covered by new keys?
-    defaults_without_keys = keys_cf_default[
-            ~np.in1d(keys_cf_default, keys_cf)]
-    if len(defaults_without_keys):
-        for k in defaults_without_keys:
-            cf[k] = cf_default[k]
-            DEFAULTS_ASSIGNED.append(f'    {k} -> {cf[k]}')
-
-    # Are there None values in final config?
-    if None in cf.values():
-        BAD_STUFF.append(
-                'Config keys {} have "None" value after default merge'
-                .format([k for k, v in cf.items() if v is None]))
-
-    # // Afterprocessing
-    if len(BAD_STUFF):
-        BAD_STUFF_STR = 'Strict config inheritance not possible:\n{}'.format(
-                '\n'.join(BAD_STUFF))
-        # Strict mode will throw in case of bad stuff
-        if strict:
-            raise ValueError(BAD_STUFF_STR)
-        else:
-            log.warning(BAD_STUFF_STR)
-    if len(DEFAULTS_ASSIGNED):
-        DEFAULTS_ASSIGNED_STR = 'We assigned some defaults:\n{}'.format(
-                '\n'.join(DEFAULTS_ASSIGNED))
-        # Strict mode will warn in case of defaults assignment
-        if strict:
-            log.warning(DEFAULTS_ASSIGNED_STR)
-        else:
-            log.info(DEFAULTS_ASSIGNED_STR)
-
-    return unflatten_nested_dict(cf)
-
-
 def enumerate_mstring(string, indent=4):
     estring = []
     splitted = string.split('\n')

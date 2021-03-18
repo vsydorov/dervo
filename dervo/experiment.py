@@ -67,10 +67,8 @@ meta_code_import_prefix: 'pose3d.experiments.meta'
 run: 'empty_run'
 """
 
-# // Experimental tools
-# //// Snakes and other tools for wandering around filesystem
+# / Snakes  <HHHHHHHH(:)-<
 
-# <HHHHHHHH(:)-<
 # Snake goes [deepest] --> [shallowest]
 Snake = List[Tuple[Path, List[str]]]
 
@@ -110,6 +108,25 @@ def stop_snake(
             break
     return stopped_snake
 
+# YML configurations (nested dicts)
+
+def yml_load(f):
+    cfg = yaml.safe_load(f)
+    cfg = {} if cfg is None else cfg
+    return cfg
+
+
+def yml_from_file(filepath: Path):
+    with filepath.open('r') as f:
+        return yml_load(f)
+
+
+def yml_list_merge(cfgs):
+    merged_cfg = {}
+    for cfg in cfgs:
+        merged_cfg = snippets.gir_merge_dicts(cfg, merged_cfg)
+    return merged_cfg
+
 
 def merged_yml_from_paths(yml_paths: Iterator[Path]):
     """
@@ -117,11 +134,8 @@ def merged_yml_from_paths(yml_paths: Iterator[Path]):
     Returns {} if iterator is empty
     """
     merged_cfg = None
-    for filename in yml_paths:
-        with filename.open('r') as f:
-            cfg = yaml.safe_load(f)
-        # Empty file ->  empty dicts, not "None"
-        cfg = {} if cfg is None else cfg
+    for filepath in yml_paths:
+        cfg = yml_from_file(filepath)
         merged_cfg = snippets.gir_merge_dicts(cfg, merged_cfg)
     if merged_cfg is None:
         merged_cfg = {}
@@ -459,11 +473,11 @@ def _establish_dervo_configuration(path):
     root_local: Path = root_snake[-1][0]  # @ROOT w.r.t dervo was launched
 
     yml_paths = match_snake(root_snake, DEFAULT_DERVO_YML_CFG)
-    dervo_cfg = merged_yml_from_paths(yml_paths)
-    import pudb; pudb.set_trace()  # XXX BREAKPOINT
-    dervo_cfg = snippets.cfg_inherit_defaults(DERVO_CFG_DEFAULTS, dervo_cfg)
-
+    cfgs = [yml_from_file(f) for f in yml_paths]
+    cfgs = [yml_load(DERVO_CFG_DEFAULTS), ] + cfgs
+    dervo_cfg = yml_list_merge(cfgs)
     dervo_cfg = cfg_replace_prefix(dervo_cfg, root_local)
+
     workfolder, root_local = get_workfolder_given_path(
             path, root_local, dervo_cfg['output_root'])
     return cfg_snake, dervo_cfg, workfolder, root_local
