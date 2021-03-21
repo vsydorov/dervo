@@ -171,14 +171,23 @@ def co_repo_check(co_repo_fold: Path, co_commit_sha: str):
         return False
 
 
+def shared_clone(repo, rpath, co_repo_fold, commit_sha):
+    # Checkout proper commit
+    repo.git.clone('--shared', rpath, str(co_repo_fold))
+    co_repo = git.Repo(str(co_repo_fold))
+    co_repo.git.checkout(commit_sha)
+    co_repo.close()
+
+
 def co_repo_create(repo, co_repo_fold, co_commit_sha, run_make):
     # Create nice repo folder
     vst.mkdir(co_repo_fold)
-    repo.git.clone('--recursive', '--shared', '.', co_repo_fold)
-    # Checkout proper commit
-    co_repo = git.Repo(str(co_repo_fold))
-    co_repo.git.checkout(co_commit_sha)
-    co_repo.close()
+    shared_clone(repo, '.', co_repo_fold, co_commit_sha)
+    # Submodules cloned individually (avoid querying the remote)
+    submodules = [repo.git.submodule('status').strip().split(' ')]
+    for commit_sha, subfold, _ in submodules:
+        shared_clone(repo, subfold, co_repo_fold/subfold, commit_sha)
+
     # Run make if Makefile exists (try several times)
     if (co_repo_fold/'Makefile').exists():
         if run_make:
