@@ -24,248 +24,109 @@ import vst
 from vst.exp import (unflatten_nested_dict, flatten_nested_dict, set_dd)
 
 from dervo import snippets
+from dervo.config import (Snake, snake_stop, snake_match,
+        DEFAULT_SNAKE_STOPPER_PY_CFG, DEFAULT_PY_CFG,
+        DEFAULT_SNAKE_STOPPER_YML_CFG, DEFAULT_YML_CFG,
+        establish_dervo_configuration, cfg_replace_prefix,
+        yml_list_merge, yml_from_file)
 
 log = logging.getLogger(__name__)
 
-DEFAULT_YML_CFG = 'cfg.yml'
-# If encountered - cfg.yml snake stops
-DEFAULT_SNAKE_STOPPER_YML_CFG = '_ROOT_YML_CFG'
-
-DEFAULT_PY_CFG = 'cfg.py'
-# If encountered - cfg.py snake stops
-DEFAULT_SNAKE_STOPPER_PY_CFG = '_ROOT_PY_CFG'
-
-DEFAULT_DERVO_YML_CFG = 'dervo.yml'
-DEFAULT_ROOT = '_ROOT'  # Snake looks for ROOT
+TEMPLATE_PYEVAL = '(PY|py)@(.+)'
 
 EXPERIMENT_PATH = None
 
-DERVO_CFG_DEFAULTS = """
-# Where the heavy outputs will be stored
-output_root: ~
 
-# Where to checkout code to
-checkout_root: ~
-
-# Project from which we launch experiments
-code_root: ~
-
-# Run "make" when checking out
-make: False
-
-# Make symlinks relative (good for portability)
-relative_symlinks: False
-
-symlink_prefix: ''
-
-# prefix to add to 'run' field when executing experiment code
-code_import_prefix: 'pose3d.experiments'
-
-# prefix to add to <meta_run> argument when executing meta_experiment code
-meta_code_import_prefix: 'pose3d.experiments.meta'
-
-# Experiment function to be executed
-run: 'empty_run'
-"""
-
-# / Snake  <HHHHHHHH(:)-<
-
-# Snake goes [deepest] --> [shallowest]
-Snake = List[Tuple[Path, List[str]]]
-
-def create_ascending_snake(path, stop_filename) -> Snake:
-    """
-    - Starting from 'path' ascend the filesystem tree
-      - Stop when we hit a folder containing 'stop_filename'
-    - Record directory contents into a Snake
-    """
-    snake = []  # type: List[Tuple[Path, List[str]]]
-    for dir in itertools.chain([path], path.parents):
-        files = [x.name for x in dir.iterdir()]
-        snake.append((dir, files))
-        if (stop_filename in files):
-            break
-    return snake
+# Experiment boilerplate
 
 
-def match_snake(
-        snake: Snake, match: str, reverse=True):
-    # Get matching filenames from the snake
-    filepaths = [path/match for path, files in snake if match in files]
-    if reverse:
-        filepaths = filepaths[::-1]
-    return filepaths
+def get_module_experiment_str(
+        run: str, import_prefix: str) -> Tuple[str, str]:
+    if len(import_prefix):
+        run = import_prefix.strip('.') + '.' + run
+    dot_split = run.split('.')
+    module_str = '.'.join(dot_split[:-1])
+    experiment_str = dot_split[-1]
+    return module_str, experiment_str
 
 
-def stop_snake(
-        snake: Snake,
-        snake_stoppper: str):
-    stopped_snake = []
-    for path, files in snake:
-        stopped_snake.append((path, files))
-        if snake_stoppper in files:
-            log.info('Snake stopped at {} because stopper {} found'.format(
-                path, snake_stoppper))
-            break
-    return stopped_snake
-
-# YML configurations (nested dicts)
-
-def yml_load(f):
-    cfg = yaml.safe_load(f)
-    cfg = {} if cfg is None else cfg
-    return cfg
-
-
-def yml_from_file(filepath: Path):
-    with filepath.open('r') as f:
-        return yml_load(f)
-
-
-def yml_list_merge(cfgs):
-    merged_cfg = {}
-    for cfg in cfgs:
-        merged_cfg = snippets.gir_merge_dicts(cfg, merged_cfg)
-    return merged_cfg
-
-
-def merged_yml_from_paths(yml_paths: Iterator[Path]):
-    """
-    Reads yml files, merges them.
-    Returns {} if iterator is empty
-    """
-    merged_cfg = None
-    for filepath in yml_paths:
-        cfg = yml_from_file(filepath)
-        merged_cfg = snippets.gir_merge_dicts(cfg, merged_cfg)
-    if merged_cfg is None:
-        merged_cfg = {}
-    return merged_cfg
-
-# Rest of configurations
-
-
-def get_workfolder_given_path(path, root_dervo, output_root):
-    """Create output folder, create symlink to it """
-    # Create output folder (name defined by relative path wrt root_dervo)
-    output_foldername = str(path.relative_to(root_dervo)).replace('/', '.')
-    workfolder = vst.mkdir(output_root/output_foldername)
-    return workfolder
-
-
-def prepare_updates_to_yml_given_py(cfg, py_hierarchy, snake_head):
-    """
-    Executes scripts defined in 'py_hierarchy' in local scope. Searches cfg for
-    'PY_TEMPLATE' matches, replaces the values with local scope ones
-
-    When executing py_hierarchy adds path information (utilizing py_hierarchy
-    and snake_head)
-    """
-    PY_TEMPLATE = '(PY|py)@(.+)'
-
-    # Prepare script
-    script = "from pathlib import Path\n"
-    for lvl, python_file in enumerate(py_hierarchy):
-        with python_file.open() as f:
-            # script += '\n'
-            script += f'# LVL {lvl}\n'
-            script += f'epath = Path("{python_file.parent}")\n'
-            script += f.read()
-    # script += f'\nexp_path = Path("{snake_head}")  # Experiment folder\n'
-    script += '# Experiment folder\n'
-    script += f'epath = Path("{snake_head}")\n'
-
-    code = compile(script, '<cfg_script>', 'exec')
-
-    pretty_script = snippets.indent_mstring('#'*25+'\n'+script+'#'*25, 2)
-    log.info(f'Executing following preparation script:\n{pretty_script}')
-    log.info('--- {{{ EXEC py_code')
-    try:
-        exec(code, globals())  # Potentially horrible things happen
-    except Exception:
-        log.info('Error while executing:\n{}'.format(
-            snippets.enumerate_mstring(script)))
-        raise
-    finally:
-        log.info('--- }}} EXEC py_code')
-
-    # Finding missing values in CFG and replacing with local scope variables
-    cf = flatten_nested_dict(cfg, '', '.')
-    updates_to_eval = {}
-    for dot_key, value in cf.items():
-        if not isinstance(value, str):
-            continue
-        match_ = re.match(PY_TEMPLATE, value)
-        if match_:
-            expr = match_.group(2)
-            updates_to_eval[dot_key] = expr
-
-    py_updates = {}
-    if len(updates_to_eval):
-        updates_to_eval_str = '\n'.join(f'{dot_key} <-- {expr}'
-            for dot_key, expr in updates_to_eval.items())
-        log.info('Such values will be evald (N={}):\n{}'.format(
-            len(updates_to_eval), updates_to_eval_str))
-        log.info('--- {{{ EXEC py_updates')
-        for dot_key, expr in updates_to_eval.items():
-            py_updates[dot_key] = eval(expr)
-        log.info('--- }}} EXEC py_updates')
-        py_updates_str = '\n'.join(f'{dot_key} <-- {value}'
-            for dot_key, value in py_updates.items())
-        log.info('Values after eval (N={}):\n{}'.format(
-            len(updates_to_eval), py_updates_str))
-    return py_updates
-
-
-def get_configuration_py_yml_given_snake(
-        snake: List[Tuple[Path, List[str]]],
-            ):
-    """
-    Reconstruct whole configuration by processing yml, py file
-    """
-    # Load YML
-    log.info('-- {{ Merge YML configurations')
-    yml_cfg_snake = stop_snake(snake, DEFAULT_SNAKE_STOPPER_YML_CFG)
-
-    yml_filenames = match_snake(yml_cfg_snake, DEFAULT_YML_CFG)
-    cfg = merged_yml_from_paths(yml_filenames)
-    YML_MERGE_LEVELS = '\n'.join([
-        f'{level}\t{path}'
-        for level, path in enumerate(yml_filenames)])
-    if len(YML_MERGE_LEVELS):
-        log.info(f'Such yml configs were merged:\n{YML_MERGE_LEVELS}')
+def create_symlink_to_workfolder(workfolder, path,
+        relative_symlinks, symlink_prefix):
+    if relative_symlinks:
+        symlink_path = Path(os.path.relpath(workfolder, path))
     else:
-        log.info('No yml configs were merged')
-    YML_AFTER_MERGE = yaml.dump(cfg, default_flow_style=False).rstrip()
-    log.debug(f'YML after merge:\n{YML_AFTER_MERGE}')
-    log.info('-- }} Merge YML configurations')
-
-    # {{ PY updates to YML
-    log.info('-- {{ Merge PY code, Update YML with PY')
-    py_cfg_snake = stop_snake(snake, DEFAULT_SNAKE_STOPPER_PY_CFG)
-    py_filenames = match_snake(py_cfg_snake, DEFAULT_PY_CFG)
-    PY_MERGE_LEVELS = '\n'.join([
-        f'{level}\t{path}'
-        for level, path in enumerate(py_filenames)])
-    log.info(f'Such .py scripts will be run:\n{PY_MERGE_LEVELS}')
-
-    # Sample updates (python code eval inside)
-    updates_to_make = prepare_updates_to_yml_given_py(
-            cfg, py_filenames, snake[0][0])
-    for dot_key, value in updates_to_make.items():
-        set_dd(cfg, dot_key, value)
-    # }} PY updates to YML
-    log.info('-- }} Merge PY code, Update YML with PY')
-
-    log.info('Merge summary:\n{}'.format(
-        snippets.indent_mstring(print_flat_cfg_and_levels(
-            cfg, yml_filenames, py_filenames), 2)))
-    log.debug('Full config (YML+PY):\n{}'.format(snippets.indent_mstring(
-        yaml.dump(cfg, default_flow_style=False).rstrip(), 2)))
-    return cfg
+        symlink_path = Path(workfolder)
+    symlink_name = symlink_prefix+workfolder.name
+    snippets.force_symlink(path, symlink_name, symlink_path)
 
 
-# //// Launching experiments themselves
+def setup_logging(
+        workfolder_w_commit, path, root_dervo, actual_code_root,
+        module_str, experiment_str, lctr):
+    # Create two output files in /log subfolder, start loggign
+    assert isinstance(logging.getLogger().handlers[0],
+            logging.StreamHandler), 'First handler should be StreamHandler'
+    logfolder = vst.mkdir(workfolder_w_commit/'log')
+    id_string = vst.get_experiment_id_string()
+    logfilename_debug = vst.add_filehandler(
+            logfolder/f'{id_string}.DEBUG.log', logging.DEBUG, 'extended')
+    logfilename_info = vst.add_filehandler(
+            logfolder/f'{id_string}.INFO.log', logging.INFO, 'short')
+    log.info(inspect.cleandoc(
+        f"""Initialized the logging system!
+        Platform: \t\t{snippets.platform_info()}
+        Experiment path: \t{path}
+        Workfolder path: \t{workfolder_w_commit}
+        Dervo root: \t\t{root_dervo}
+        Actual code root: \t{actual_code_root}
+        --- Python --
+        VENV:\t\t\t{vst.is_venv()}
+        Prefix:\t\t\t{sys.prefix}
+        --- Code ---
+        Module: \t\t{module_str}
+        Experiment: \t\t{experiment_str}
+        -- Logging --
+        DEBUG logfile: \t\t{logfilename_debug}
+        INFO logfile: \t\t{logfilename_info}
+        """))
+    from pip._internal.operations import freeze
+    log.debug('pip freeze: {}'.format(';'.join(freeze.freeze())))
+    # Release previously captured logging records
+    log.info('- { CAPTURED: Loglines before system init')
+    lctr.handle_captured()
+    log.info('- } CAPTURED: Loglines before system init')
+
+
+def deal_with_imports(actual_code_root, module_str, experiment_str):
+    # Extend pythonpath to allow importing certain modules
+    sys.path.insert(0, str(actual_code_root))
+    # Unload caches, to allow local version (if present) to take over
+    importlib.invalidate_caches()
+    # Reload vst and then submoduless (avoid issues with __init__ imports)
+    # https://stackoverflow.com/questions/35640590/how-do-i-reload-a-python-submodule/51074507#51074507
+    importlib.reload(vst)
+    for k, v in list(sys.modules.items()):
+        if k.startswith('vst'):
+            log.debug(f'Reload {k} {v}')
+            importlib.reload(v)
+    # Import experiment routine
+    module = importlib.import_module(module_str)
+    experiment_routine = getattr(module, experiment_str)
+    return module, experiment_routine
+
+
+def handle_experiment_error(err):
+    # Remove first handler(StreamHandler to stderr) to avoid double clutter
+    our_logger = logging.getLogger()
+    assert len(our_logger.handlers), \
+            'Logger handlers are empty for some reason'
+    if isinstance(our_logger.handlers[0], logging.StreamHandler):
+        our_logger.removeHandler(our_logger.handlers[0])
+    log.exception("Fatal error in experiment routine")
+    raise err
+
+
+# Checking out
 
 
 def git_repo_query(code_root: Path) -> Tuple[git.Repo, str, bool]:
@@ -414,15 +275,15 @@ def decide_actual_code_root(
         co_repo_fold = co_repo_checkout(
                 repo, co_repo_fold, co_commit_sha, run_make)
         actual_code_root = co_repo_fold
-        output_prefix = co_commit_sha
+        commit_foldname = co_commit_sha
     else:
         log.info('Running raw code')
         actual_code_root = code_root
-        output_prefix = 'RAW'
-    return actual_code_root, output_prefix
+        commit_foldname = 'RAW'
+    return actual_code_root, commit_foldname
 
 
-def _manage_code_checkout(dervo_cfg, co_commit):
+def manage_code_checkout(dervo_cfg, co_commit):
     # // Managing code (wrt git commits), obtaining well formed prefix
     log.info('-- {{ Code checkout')
     code_root = Path(dervo_cfg['code_root'])
@@ -436,72 +297,167 @@ def _manage_code_checkout(dervo_cfg, co_commit):
     else:
         checkout_root = Path(checkout_root)
 
-    actual_code_root, output_prefix = decide_actual_code_root(
+    actual_code_root, commit_foldname = decide_actual_code_root(
             checkout_root, code_root, co_commit, repo,
             commit_sha, dirty, dervo_cfg['make'])
     if repo is not None:
         repo.close()
     log.info('-- }} Code checkout')
-    return actual_code_root, output_prefix
+    return actual_code_root, commit_foldname
 
 
-def cfg_replace_prefix(cfg, root_dervo, PREFIX='DERVO@ROOT'):
-    # A hacky thing that replaces @DERVO_ROOT prefix with root_dervo
-    cf = flatten_nested_dict(cfg, '', '.')
-    updates_to_make = {}
-    for k, v in list(cf.items()):
-        if isinstance(v, str) and v.startswith(PREFIX):
-            updates_to_make[k] = os.path.abspath(v.replace(
-                'DERVO@ROOT', str(root_dervo.resolve())))
-    if len(updates_to_make):
-        log.info('Dervo prefix replacements:\n{}'.format(
-            snippets.indent_mstring(pprint.pformat(updates_to_make), 4)))
-        cf.update(updates_to_make)
-        cfg = unflatten_nested_dict(cf)
-    return cfg
+# CFG/PY configuration reconstruction
 
 
-def _establish_dervo_configuration(path: Path):
+def _r_load_yml_pyeval(snake, snake_subfolds, root_dervo):
     """
-    Define dervo configuration
-    - Where to save outputs, which code to access, etc
+    Load YML scripts and check for possible pyeval queries
     """
-    path = path.resolve()
-    snake: Snake = create_ascending_snake(path, DEFAULT_ROOT)
-    root_dervo: Path = snake[-1][0]  # @ROOT w.r.t dervo was launched
-
-    yml_paths = match_snake(snake, DEFAULT_DERVO_YML_CFG)
-    cfgs = [yml_from_file(f) for f in yml_paths]
-    cfgs = [yml_load(DERVO_CFG_DEFAULTS), ] + cfgs
-    dervo_cfg = yml_list_merge(cfgs)
-    dervo_cfg = cfg_replace_prefix(dervo_cfg, root_dervo)
-
-    workfolder = get_workfolder_given_path(
-            path, root_dervo, Path(dervo_cfg['output_root']))
-    return snake, dervo_cfg, workfolder, root_dervo
-
-
-def get_module_experiment_str(
-        run: str, import_prefix: str) -> Tuple[str, str]:
-    run_split = run.split('.')  # Code to be run
-    if import_prefix == '':
-        import_prefix_split = []  # type: ignore
-    else:
-        import_prefix_split = import_prefix.split('.')
-    module_str = '.'.join(import_prefix_split + run_split[:-1])
-    experiment_str = run_split[-1]
-    return module_str, experiment_str
+    yml_cfg_snake = snake_stop(snake, DEFAULT_SNAKE_STOPPER_YML_CFG)
+    yml_filepaths = snake_match(yml_cfg_snake, DEFAULT_YML_CFG)
+    yml_configs = {}
+    for path in yml_filepaths:
+        lvl = snake_subfolds.index((path.parent))
+        yml_config = yml_from_file(path)
+        yml_config = cfg_replace_prefix(yml_config, root_dervo)
+        yml_configs[lvl] = yml_config
+    pyeval_queries = {}
+    for lvl, yml_config in yml_configs.items():
+        cf = flatten_nested_dict(yml_config, '', '.')
+        queries = {}
+        for dot_key, value in cf.items():
+            if not isinstance(value, str):
+                continue
+            match = re.match(TEMPLATE_PYEVAL, value)
+            if match:
+                queries[dot_key] = match.group(2)
+        if len(queries):
+            pyeval_queries[lvl] = queries
+    return yml_configs, pyeval_queries
 
 
-def _handle_experiment_error(err):
-    # Remove first handler(StreamHandler to stderr) to avoid double clutter
-    our_logger = logging.getLogger()
-    assert len(our_logger.handlers), \
-            'Logger handlers are empty for some reason'
-    if isinstance(our_logger.handlers[0], logging.StreamHandler):
-        our_logger.removeHandler(our_logger.handlers[0])
-    log.exception("Fatal error in experiment routine")
-    raise err
+def _r_perform_pyeval_updates(
+        snake, snake_subfolds, pyeval_queries, yml_configs):
+    """
+    Obtain values for pyeval queries and update yml configs
+
+    - Find .py files in the snake hierarchy
+    - Create a python scope, populate with pyeval_scripts
+    - Concatenate .py files, pyeval queries into a script, eval in that scope
+    - Retrieve pyeval updates
+    - Update values of yml configs
+    """
+    log.info('-- {{ PYEVAL updates for YML files')
+    # Load standalone python files
+    py_cfg_snake = snake_stop(snake, DEFAULT_SNAKE_STOPPER_PY_CFG)
+    py_filepaths = snake_match(py_cfg_snake, DEFAULT_PY_CFG)
+    pyfiles = {}
+    for path in py_filepaths:
+        lvl = snake_subfolds.index((path.parent))
+        pyfiles[lvl] = path
+    log.debug('pyeval queries\n{}'.format(pyeval_queries))
+    log.debug('pyfiles per scope:\n{}'.format(pprint.pformat(pyfiles)))
+
+    # Create python script
+    cfg_script = "_DRV_PYEVAL = {}\n"
+    for lvl, subfold in enumerate(snake_subfolds):
+        lvl_script = ""
+        if lvl in pyfiles:
+            filepath = pyfiles[lvl]
+            lvl_script += f'# {str(filepath)}\n'
+            with filepath.open() as f:
+                lvl_script += f.read()
+        if lvl in pyeval_queries:
+            updates = pyeval_queries[lvl]
+            lvl_script += f"_DRV_PYEVAL[{lvl}] = {{\n"
+            for k, v in updates.items():
+                lvl_script += f"  '{k}': {v},\n"
+            lvl_script += '}\n'
+        if len(lvl_script):
+            lvl_script = f'\n# lvl={lvl}\nepath = Path("{subfold}")\n' + lvl_script
+            cfg_script += lvl_script
+    cfg_script = '#'*25+'\n'+cfg_script+'#'*25
+    log.info(f'Prepared python script:\n{cfg_script}')
+
+    # Evaluate python script in a separate scope
+    cfg_scope = {}
+    from dervo import pyeval_scripts
+    cfg_scope.update(pyeval_scripts.__dict__)
+    code = compile(cfg_script, '<cfg_script>', 'exec')
+    exec(code, cfg_scope)
+
+    # Retrieve evaluated pyeval values, replace them in YML configs
+    pyeval_updates = cfg_scope['_DRV_PYEVAL']
+    for lvl, updates in pyeval_updates.items():
+        yml_config = yml_configs[lvl]
+        for dot_key, value in updates.items():
+            set_dd(yml_config, dot_key, value)
+    # Display replaced values:
+    pyeval_str = "Pyeval values obtained:\n"
+    for lvl, updates in pyeval_updates.items():
+        pyeval_str += "lvl: {} fold: {}\n".format(lvl, snake_subfolds[lvl])
+        for dot_key, value in updates.items():
+            pyeval_str += "  {}: {} -> {}\n".format(
+                    dot_key, pyeval_queries[lvl][dot_key], value)
+    log.debug(pyeval_str)
+    log.info('-- }} PYEVAL updates for YML files')
+
+
+def _yml_merge_summary(yml_merged_config, yml_configs, snake_subfolds):
+    flat0 = flatten_nested_dict(yml_merged_config, '', '.')
+
+    # Record level to display later
+    importlevel = {}
+    for level, yml_config in yml_configs.items():
+        flat = flatten_nested_dict(yml_config, '', '.')
+        for k, v in flat.items():
+            importlevel[k] = level
+
+    # Fancy display
+    mkey = max(map(lambda x: len(x), flat0.keys()), default=0)
+    mlevel = max(importlevel.values(), default=0)
+    row_format = "{:<%d} {:<5} {:<%d} {:}" % (mkey, mlevel)
+    output = ''
+    output += "YML configurations:\n"
+    for lvl, yml_config in yml_configs.items():
+        output += "lvl: {} fold: {}\n".format(lvl, snake_subfolds[lvl])
+    output += row_format.format('key', 'source', '', 'value')+'\n'
+    output += row_format.format('--', '--', '--', '--')+'\n'
+    for key, value in flat0.items():
+        level = importlevel.get(key, '?')
+        levelstars = '*'*importlevel.get(key, 0)
+        output += row_format.format(
+                key, level, levelstars, value)+'\n'
+    return output
+
+
+def reconstruct_experiment_config(snake: Snake):
+    """
+    Reconstruct whole configuration by processing .yml, .py files
+    - Load .yml hierarchy
+    - If "pyeval" fields (py@..) were found in .yml
+      - Sequentially execute .py fields, replace pyeval fields
+    - Merge .yml hierarchy
+    """
+    root_dervo: Path = snake[-1][0]
+    snake_subfolds = [x[0] for x in snake][::-1]
+    # snake_rpaths = [os.path.relpath(x, root_dervo) for x in snake_subfolds]
+
+    # Load YML files
+    yml_configs, pyeval_queries = _r_load_yml_pyeval(
+            snake, snake_subfolds, root_dervo)
+    # Perform pyeval_queries
+    if len(pyeval_queries):
+        _r_perform_pyeval_updates(
+                snake, snake_subfolds, pyeval_queries, yml_configs)
+    # Merge YML configs
+    yml_merged_config = yml_list_merge(yml_configs.values())
+    log.info(_yml_merge_summary(
+        yml_merged_config, yml_configs, snake_subfolds))
+    return yml_merged_config
+
+
+# Experiment launch
 
 
 def run_experiment(path, add_args, co_commit: str = None):
@@ -515,187 +471,43 @@ def run_experiment(path, add_args, co_commit: str = None):
           operate on that code
     """
     path = path.resolve()
-    snake, dervo_cfg, workfolder, root_dervo = \
-            _establish_dervo_configuration(path)
 
-    # Vital symlink logic
-    if dervo_cfg['relative_symlinks']:
-        symlink_path = Path(os.path.relpath(workfolder, path))
-    else:
-        symlink_path = Path(workfolder)
-    symlink_name = dervo_cfg['symlink_prefix']+workfolder.name
-    snippets.force_symlink(path, symlink_name, symlink_path)
-
-    assert isinstance(logging.getLogger().handlers[0],
-            logging.StreamHandler), 'First handler should be StreamHandler'
-
-    with vst.LogCaptorToRecords(pause_others=True) as lctr:
-        actual_code_root, output_prefix = _manage_code_checkout(
-                dervo_cfg, co_commit)
-
-    # Cleanly separate outputs per commit sha
-    workfolder_w_commit = vst.mkdir(workfolder/output_prefix)
-
-    # Find proper experiment routine
-    module_str, experiment_str = get_module_experiment_str(
-            dervo_cfg['run'], dervo_cfg['code_import_prefix'])
-
-    # Set up logging
-    logfolder = vst.mkdir(workfolder_w_commit/'log')
-    id_string = vst.get_experiment_id_string()
-    logfilename_debug = vst.add_filehandler(
-            logfolder/f'{id_string}.DEBUG.log', logging.DEBUG, 'extended')
-    logfilename_info = vst.add_filehandler(
-            logfolder/f'{id_string}.INFO.log', logging.INFO, 'short')
-    log.info(inspect.cleandoc(
-        f"""Welcome to the logging system!
-        Platform: \t\t{snippets.platform_info()}
-        Debug file: \t\t{logfilename_debug}
-        Info file: \t\t{logfilename_info}
-        Experiment path: \t{path}
-        Workfolder path: \t{workfolder_w_commit}
-        Root (local): \t\t{root_dervo}
-        Actual code root: \t{actual_code_root}
-        --- Python --
-        VENV:\t\t\t{vst.is_venv()}
-        Prefix:\t\t\t{sys.prefix}
-        --- Code ---
-        Module: \t\t{module_str}
-        Experiment: \t\t{experiment_str}
-        """))
-    from pip._internal.operations import freeze
-    log.debug('pip freeze: {}'.format(';'.join(freeze.freeze())))
-
-    log.info('- { CAPTURED: Loglines before system init')
-    lctr.handle_captured()
-    log.info('- } CAPTURED: Loglines before system init')
-
-    # Whole configuration reconstructed here
-    log.info('- { GET_CFG: Parse experiment configuration')
-    cfg = get_configuration_py_yml_given_snake(snake)
-    cfg = cfg_replace_prefix(cfg, root_dervo)
-    log.info('- } GET_CFG: Parse experiment configuration')
-
-    # Save final config to the output folder
-    # TODO: Warn if changed from last time
-    with (workfolder_w_commit/'final_config.cfg').open('w') as f:
-        print(yaml.dump(cfg, default_flow_style=False), file=f)
-
-    # Extend pythonpath to allow importing certain modules
-    sys.path.insert(0, str(actual_code_root))
-
-    # Unload caches, to allow local version (if present) to take over
-    importlib.invalidate_caches()
-    # Reload vst, then submodules, then vst again (to allow __init__ imports)
-    # https://stackoverflow.com/questions/35640590/how-do-i-reload-a-python-submodule/51074507#51074507
-    importlib.reload(vst)
-    for k, v in list(sys.modules.items()):
-        if k.startswith('vst'):
-            log.debug(f'Reload {k} {v}')
-            importlib.reload(v)
-
-    # Import experiment routine
-    module = importlib.import_module(module_str)
-    experiment_routine = getattr(module, experiment_str)
-
-    # I'll cheat and create global variable here
     global EXPERIMENT_PATH
     EXPERIMENT_PATH = path
 
-    # Execute experiment routine
+    with vst.LogCaptorToRecords(pause_others=True) as lctr:
+        # Establish dervo configuration (.yml merge)
+        snake, dervo_cfg, workfolder, root_dervo = \
+                establish_dervo_configuration(path)
+        # Module/experiment split
+        module_str, experiment_str = get_module_experiment_str(
+                dervo_cfg['run'], dervo_cfg['code_import_prefix'])
+        # Establish code root (clone if necessary)
+        actual_code_root, commit_foldname = manage_code_checkout(
+                dervo_cfg, co_commit)
+        # Prepare workfolder
+        create_symlink_to_workfolder(workfolder, path,
+                dervo_cfg['relative_symlinks'], dervo_cfg['symlink_prefix'])
+        workfolder_w_commit = vst.mkdir(workfolder/commit_foldname)
+
+    setup_logging(workfolder_w_commit, path, root_dervo,
+            actual_code_root, module_str, experiment_str, lctr)
+
+    log.info('- { GET_CFG: Parse experiment configuration')
+    cfg = reconstruct_experiment_config(snake)
+    # Save final config to the output folder
+    str_cfg = yaml.dump(cfg, default_flow_style=False)
+    log.debug(f'Final config:\n{str_cfg}')
+    with (workfolder_w_commit/'final_config.cfg').open('w') as f:
+        print(str_cfg, file=f)
+    log.info('- } GET_CFG: Parse experiment configuration')
+
+    module, experiment_routine = deal_with_imports(
+            actual_code_root, module_str, experiment_str)
+
+    log.info('- { GET_CFG: Execute experiment routine')
     try:
         experiment_routine(workfolder_w_commit, cfg, add_args)
     except Exception as err:
-        _handle_experiment_error(err)
-
-
-# // GLUE
-# Glue functions are allowed to be called by cfg.py files
-
-def anygrab(
-        path: Union[Path, str],
-        rel_path: str,
-        commit: str = None,
-        must_exist=True) -> str:
-    """
-    Glue. Find absolute path to workfolder of another experiment, append
-    rel_path to it, makes sure file exists.
-    """
-    log.info(f'<<< BEGIN GLUE (anygrab). Grab: {rel_path} @ {commit} @ {path}')
-    # Dervo configuration allows us to look up workfolder
-    with vst.logging_disabled(logging.INFO):
-        snake, dervo_cfg, workfolder, root_dervo = \
-                _establish_dervo_configuration(Path(path))
-    # Resolve commit
-    if commit is None:
-        subfolders = list(workfolder.iterdir())
-        if not len(subfolders):
-            raise RuntimeError('Anygrab fail: no commit subfolders')
-        commitfolder = subfolders[0]
-    else:
-        commitfolder = workfolder/commit
-    # Now get the item
-    item_to_find = commitfolder/rel_path
-    if must_exist and not item_to_find.exists():
-        raise FileNotFoundError(f'Could not grab from {item_to_find}')
-    log.info('>>> END GLUE (anygrab). Grabbed {}'.format(item_to_find))
-    return str(item_to_find)
-
-
-def get_tags(path):
-    """
-    Glue. Finds all tagged folders (tag must be unique), adds them to dict
-    """
-    # NFS stupidity prevention
-    while True:
-        try:
-            taglist = [[x.name, x.parent] for x in path.glob('**/T@*')]
-            break
-        except (OSError) as e:
-            log.debug('Caught {}, trying again'.format(e))
-    tags = dict(taglist)
-    if len(tags) != len(taglist):
-        log.error("You've got non-unique tags!")
-        log.error('\n'.join(map(
-            lambda x: "{0:25} <- {1}".format(*x), taglist)))
-        raise ValueError('Tags must be unique!')
-    if len(taglist) > 0:
-        maxlen = max(len(x[0]) for x in taglist)
-        descr = '\n'.join(map(lambda x: "{:{}} <- {}".format(
-            x[0], maxlen, x[1].relative_to(path)), taglist))
-        log.info(f'TAGS FOUND from {path}:\n{descr}')
-    else:
-        log.info(f'NO TAGS FOUND from {path}')
-
-    return tags
-
-
-# // Other functions
-
-
-def print_flat_cfg_and_levels(cfg, yml_hierarchy, py_hierarchy):
-    flat0 = flatten_nested_dict(cfg, '', '.')
-
-    # Record level to display later
-    importlevel = {}
-    for level, path in enumerate(yml_hierarchy):
-        with path.open('r') as f:
-            cfg_ = yaml.safe_load(f)
-        # Empty file -> empty dict, not "None"
-        cfg_ = {} if cfg_ is None else cfg_
-
-        for k, v in flatten_nested_dict(cfg_, '', '.').items():
-            importlevel[k] = level
-
-    # Fancy display
-    mkey = max(map(lambda x: len(x), flat0.keys()), default=0)
-    mlevel = max(importlevel.values(), default=0)
-    row_format = "{:<%d} {:<5} {:<%d} {:}" % (mkey, mlevel)
-    output = row_format.format('key', 'source', '', 'value')
-    output += '\n'+row_format.format('--', '--', '--', '--')
-    for key, value in flat0.items():
-        level = importlevel.get(key, '?')
-        levelstars = '*'*importlevel.get(key, 0)
-        output += '\n'+row_format.format(
-                key, level, levelstars, value)
-    return output
+        handle_experiment_error(err)
+    log.info('- } GET_CFG: Execute experiment routine')

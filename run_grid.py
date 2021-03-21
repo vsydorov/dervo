@@ -105,7 +105,7 @@ class GridManager(object):
                 log.warning('Spaces in folder name. Trying to fix')
                 foldname = foldname.replace(' ', '')
             file_contents = yaml.dump(
-                    snippets.unflatten_nested_dict(kvdict))
+                    vst.exp.unflatten_nested_dict(kvdict))
             self.folds_and_cfgs.append((foldname, file_contents, kvdict))
 
     @staticmethod

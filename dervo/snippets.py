@@ -1,6 +1,3 @@
-"""
-Organization tools that do not concert experiments
-"""
 import subprocess
 import logging
 import platform
