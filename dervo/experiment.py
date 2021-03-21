@@ -184,8 +184,9 @@ def co_repo_create(repo, co_repo_fold, co_commit_sha, run_make):
     vst.mkdir(co_repo_fold)
     shared_clone(repo, '.', co_repo_fold, co_commit_sha)
     # Submodules cloned individually (avoid querying the remote)
-    submodules = [repo.git.submodule('status').strip().split(' ')]
-    for commit_sha, subfold, _ in submodules:
+    submodules = repo.git.submodule('status').split('\n')
+    submodules = [x.strip().split(' ')[:2] for x in submodules]
+    for commit_sha, subfold in submodules:
         shared_clone(repo, subfold, co_repo_fold/subfold, commit_sha)
 
     # Run make if Makefile exists (try several times)
