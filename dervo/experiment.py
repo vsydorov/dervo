@@ -60,9 +60,7 @@ def create_symlink_to_workfolder(workfolder, path,
     snippets.force_symlink(path, symlink_name, symlink_path)
 
 
-def setup_logging(
-        workfolder_w_commit, path, root_dervo, actual_code_root,
-        module_str, experiment_str, lctr):
+def setup_logging(workfolder_w_commit):
     # Create two output files in /log subfolder, start loggign
     assert isinstance(logging.getLogger().handlers[0],
             logging.StreamHandler), 'First handler should be StreamHandler'
@@ -72,6 +70,11 @@ def setup_logging(
             logfolder/f'{id_string}.DEBUG.log', logging.DEBUG, 'extended')
     logfilename_info = vst.add_filehandler(
             logfolder/f'{id_string}.INFO.log', logging.INFO, 'short')
+    return logfilename_debug, logfilename_info
+
+
+def dump_dervo_stats(workfolder_w_commit, path, root_dervo, actual_code_root,
+        module_str, experiment_str, lctr, logfilename_debug, logfilename_info):
     log.info(inspect.cleandoc(
         f"""Initialized the logging system!
         Platform: \t\t{snippets.platform_info()}
@@ -500,8 +503,9 @@ def run_experiment(path, add_args, co_commit: str = None):
                 dervo_cfg['relative_symlinks'], dervo_cfg['symlink_prefix'])
         workfolder_w_commit = vst.mkdir(workfolder/commit_foldname)
 
-    setup_logging(workfolder_w_commit, path, root_dervo,
-            actual_code_root, module_str, experiment_str, lctr)
+    logfilename_debug, logfilename_info = setup_logging(workfolder_w_commit)
+    dump_dervo_stats(workfolder_w_commit, path, root_dervo, actual_code_root,
+        module_str, experiment_str, lctr, logfilename_debug, logfilename_info)
 
     log.info('- { GET_CFG: Parse experiment configuration')
     cfg = reconstruct_experiment_config(snake)
@@ -515,6 +519,64 @@ def run_experiment(path, add_args, co_commit: str = None):
     module, experiment_routine = deal_with_imports(
             actual_code_root, module_str, experiment_str)
 
+    log.info('- { GET_CFG: Execute experiment routine')
+    try:
+        experiment_routine(workfolder_w_commit, cfg, add_args)
+    except Exception as err:
+        handle_experiment_error(err)
+    log.info('- } GET_CFG: Execute experiment routine')
+
+
+def prepare_cluster_experiment(path, add_args, co_commit: str = None):
+    path = path.resolve()
+    with vst.LogCaptorToRecords(pause_others=True) as lctr:
+        # Establish dervo configuration (.yml merge)
+        snake, dervo_cfg, workfolder, root_dervo = \
+                establish_dervo_configuration(path)
+        # Module/experiment split
+        module_str, experiment_str = get_module_experiment_str(
+                dervo_cfg['run'], dervo_cfg['code_import_prefix'])
+        # Establish code root (clone if necessary)
+        actual_code_root, commit_foldname = manage_code_checkout(
+                dervo_cfg, co_commit)
+        # Prepare workfolder
+        create_symlink_to_workfolder(workfolder, path,
+                dervo_cfg['relative_symlinks'], dervo_cfg['symlink_prefix'])
+        workfolder_w_commit = vst.mkdir(workfolder/commit_foldname)
+
+    logfilename_debug, logfilename_info = setup_logging(workfolder_w_commit)
+    dump_dervo_stats(workfolder_w_commit, path, root_dervo, actual_code_root,
+        module_str, experiment_str, lctr, logfilename_debug, logfilename_info)
+    log.info('- { GET_CFG: Parse experiment configuration')
+    cfg = reconstruct_experiment_config(snake)
+
+    # Save final config to the output folder
+    final_cfg = copy.deepcopy(cfg)
+    final_cfg['_experiment'] = {'run': module_str + ':' + experiment_str}
+    str_cfg = yaml.dump(final_cfg, default_flow_style=False)
+    log.debug(f'Final config:\n{str_cfg}')
+    with (workfolder_w_commit/'final_config.cfg').open('w') as f:
+        print(str_cfg, file=f)
+    log.info('- } GET_CFG: Parse experiment configuration')
+
+    # Symlink the code directory
+    snippets.force_symlink(workfolder_w_commit, 'code', actual_code_root)
+
+def run_cluster_experiment(workfolder_w_commit, add_args):
+    workfolder_w_commit = workfolder_w_commit.resolve()
+    logfilename_debug, logfilename_info = setup_logging(workfolder_w_commit)
+
+    # Load final config
+    cfg = yml_from_file(workfolder_w_commit/'final_config.cfg')
+    module_str, experiment_str = cfg['_experiment']['run'].split(':')
+    del cfg['_experiment']
+
+    # Resolve imports
+    actual_code_root = (workfolder_w_commit/'code').resolve()
+    module, experiment_routine = deal_with_imports(
+            actual_code_root, module_str, experiment_str)
+
+    # Run experiments
     log.info('- { GET_CFG: Execute experiment routine')
     try:
         experiment_routine(workfolder_w_commit, cfg, add_args)
