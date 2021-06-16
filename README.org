@@ -1,4 +1,4 @@
-* Dervo
+* Dervo 0.1
 
 [[./doc/dervo.jpg]]
 

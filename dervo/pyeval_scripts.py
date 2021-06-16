@@ -1,3 +1,4 @@
+import os.path
 import logging
 from pathlib import Path
 from typing import ( # NOQA
@@ -6,43 +7,55 @@ from typing import ( # NOQA
 
 import vst
 
-from dervo.experiment import (establish_dervo_configuration)
+from dervo.experiment import (
+        get_outputfolder_given_path, manage_workfolder,)
+from dervo.checkout import (
+        get_commit_sha_repo)
+from dervo.config import (
+        build_config_yml_py)
 
 log = logging.getLogger(__name__)
 
 
-def anygrab(
+def grab(
         path: Union[Path, str],
         rel_path: str = None,
         commit: str = None,
         must_exist=True) -> str:
     """
     Several modes:
-    * anygrab(path):
+    * grab(path):
       - grab the file at path
-    * anygrab(path, rel_path, [commit]):
+    * grab(path, rel_path, [commit]):
       - grab experiment at path, open workfolder
       - if defined, get commit subfold, otherwise first subfold
       - get rel_path
     - (optionally) makes sure file exists.
     """
+    path = Path(os.path.normpath(path))  # normalize without resolving symlinks
     if rel_path is None:
-        item_to_find = Path(path).resolve()
+        item_to_find = path
     else:
         # Dervo configuration allows us to look up workfolder
         with vst.logging_disabled(logging.INFO):
-            snake, dervo_cfg, workfolder, root_dervo = \
-                    establish_dervo_configuration(Path(path))
-        # Resolve commit
-        if commit is None:
-            subfolders = list(workfolder.iterdir())
-            if not len(subfolders):
-                raise RuntimeError('Anygrab fail: no commit subfolders')
-            commitfolder = subfolders[0]
-        else:
-            commitfolder = workfolder/commit
+            ycfg = build_config_yml_py(path)
+            # If separate output disabled - output goes to path
+            if not ycfg['_experiment']['output']['enable']:
+                workfolder = path
+            else:
+                outputfolder = get_outputfolder_given_path(
+                    path, Path(ycfg['_experiment']['output']['dervo_root']),
+                    Path(ycfg['_experiment']['output']['store_root']))
+                # Resolve commit
+                if commit is None:
+                    subfolders = list(outputfolder.iterdir())
+                    if not len(subfolders):
+                        raise RuntimeError('Grab fail: no commit subfolders')
+                    workfolder = subfolders[0]
+                else:
+                    workfolder = outputfolder/commit
         # Now get the item
-        item_to_find = commitfolder/rel_path
+        item_to_find = workfolder/rel_path
 
     if must_exist and not item_to_find.exists():
         raise FileNotFoundError(f'Could not grab from {item_to_find}')

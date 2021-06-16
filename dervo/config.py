@@ -1,3 +1,4 @@
+import re
 import copy
 import os.path
 import pprint
@@ -11,82 +12,33 @@ from pathlib import Path
 import yaml  # type: ignore
 
 import vst
+from vst.exp import (unflatten_nested_dict, flatten_nested_dict, set_dd)
 
 from dervo import snippets
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DERVO_YML_CFG = 'dervo.yml'
-DEFAULT_ROOT = '_ROOT'  # Snake looks for ROOT
 
-DEFAULT_YML_CFG = 'cfg.yml'
-DEFAULT_SNAKE_STOPPER_YML_CFG = '_ROOT_YML_CFG'
+# YML configuration helpers
 
-DEFAULT_PY_CFG = 'cfg.py'
-DEFAULT_SNAKE_STOPPER_PY_CFG = '_ROOT_PY_CFG'
-
-DERVO_CFG_DEFAULTS = """
-# Where the heavy outputs will be stored
-output_root: ~
-
-# Where to checkout code to
-checkout_root: ~
-
-# Project from which we launch experiments
-code_root: ~
-
-# Run "make" when checking out
-make: False
-
-# Make symlinks relative (good for portability)
-relative_symlinks: False
-
-symlink_prefix: ''
-
-# prefix to add to 'run' field when executing experiment code
-code_import_prefix: 'pose3d.experiments'
-
-# prefix to add to <meta_run> argument when executing meta_experiment code
-meta_code_import_prefix: 'pose3d.experiments.meta'
-
-# Experiment function to be executed
-run: 'empty_run'
-"""
-
-# / Snake  <HHHHHHHH(:)-<
-
-# Snake goes [deepest] --> [shallowest]
+# / Snake  [deepest]  <HHHHHHHH(:)-<  [shallowest]
 Snake = List[Tuple[Path, List[str]]]
+FILENAME_ROOT = 'root_cfg.yml'  # Snake stops after seeing ROOT
 
 
-def snake_create(path, stop_filename) -> Snake:
+def snake_create(path, stop_filename=FILENAME_ROOT) -> Snake:
     """
     - Starting from 'path' ascend the filesystem tree
       - Stop when we hit a folder containing 'stop_filename'
     - Record directory contents into a Snake
     """
     snake = []  # type: List[Tuple[Path, List[str]]]
-    for dir in itertools.chain([path], path.parents):
-        files = [x.name for x in dir.iterdir()]
-        snake.append((dir, files))
+    for fold in itertools.chain([path], path.parents):
+        files = [x.name for x in fold.iterdir()]
+        snake.append((fold, files))
         if (stop_filename in files):
             break
     return snake
-
-
-def snake_stop(snake: Snake, snake_stoppper: str):
-    """
-    Limit the snake configuration (cut off the head)
-    - Stop ascending if stopper encountered
-    """
-    stopped_snake: Snake = []
-    for path, files in snake:
-        stopped_snake.append((path, files))
-        if snake_stoppper in files:
-            log.info('Snake stopped at {} because stopper {} found'.format(
-                path, snake_stoppper))
-            break
-    return stopped_snake
 
 
 def snake_match(
@@ -96,9 +48,6 @@ def snake_match(
     if reverse:
         filepaths = filepaths[::-1]
     return filepaths
-
-
-# YML configurations (nested dicts)
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -135,62 +84,180 @@ def yml_list_merge(cfgs):
     return merged_cfg
 
 
-def merged_yml_from_paths(yml_paths: Iterator[Path]):
+# Building YML + Python configuration
+
+
+FILENAME_YML = 'cfg.yml'
+FILENAME_PY = 'cfg.py'
+DERVO_CFG_DEFAULTS = """
+_experiment:
+    run: ~                  # Experiment in the <module>:<function> format
+    code_root: ~            # Code to checkout, import
+
+    output:
+        enable: True        # Save outputs to a different folder?
+        dervo_root: ~       # Root, wrt which we compute output name
+        store_root: ~       # Where the heavy outputs will be stored
+        sl_relative: True   # Make symlinks relative (good for portability)
+        sl_prefix: 'LINK_'  # Add this prefix to symlink names
+
+    checkout:
+        root: ~                 # Folder where we checkout code versions
+        to_workfolder: False    # Put code in the workfolder
+        post_cmd: ~             # Execute after checkout (for example "make")
+"""
+
+TEMPLATE_PYEVAL = '(PY|py)@(.+)'
+
+
+def _load_yml_check_pyeval(snake: Snake, snake_subfolds):
     """
-    Reads yml files, merges them.
-    Returns {} if iterator is empty
+    Load YML scripts and check for possible pyeval queries
     """
-    merged_cfg = None
-    for filepath in yml_paths:
-        cfg = yml_from_file(filepath)
-        merged_cfg = snippets.gir_merge_dicts(cfg, merged_cfg)
-    if merged_cfg is None:
-        merged_cfg = {}
-    return merged_cfg
+    # Load YML files
+    yml_configs = {}
+    for fold, files in snake[::-1]:
+        lvl = snake_subfolds.index(fold)
+        cfgs = []
+        for cfg_name in ['root_cfg.yml', 'cfg.yml']:
+            if cfg_name in files:
+                cfgs.append(yml_from_file(fold/cfg_name))
+        if len(cfgs):
+            yml_configs[lvl] = yml_list_merge(cfgs)
+
+    # Check for possibly pyeval queries
+    pyeval_queries = {}
+    for lvl, yml_config in yml_configs.items():
+        cf = flatten_nested_dict(yml_config, '', '.')
+        queries = {}
+        for dot_key, value in cf.items():
+            if not isinstance(value, str):
+                continue
+            match = re.match(TEMPLATE_PYEVAL, value)
+            if match:
+                queries[dot_key] = match.group(2)
+        if len(queries):
+            pyeval_queries[lvl] = queries
+    return yml_configs, pyeval_queries
 
 
-# Rest
-
-
-def get_workfolder_given_path(path, root_dervo, output_root):
-    """Create output folder, create symlink to it """
-    # Create output folder (name defined by relative path wrt root_dervo)
-    output_foldername = str(path.relative_to(root_dervo)).replace('/', '.')
-    workfolder = vst.mkdir(output_root/output_foldername)
-    return workfolder
-
-
-def cfg_replace_prefix(cfg, root_dervo, PREFIX='DERVO@ROOT'):
-    # A hacky thing that replaces @DERVO_ROOT prefix with root_dervo
-    cf = vst.exp.flatten_nested_dict(cfg, '', '.')
-    updates_to_make = {}
-    for k, v in list(cf.items()):
-        if isinstance(v, str) and v.startswith(PREFIX):
-            updates_to_make[k] = os.path.abspath(v.replace(
-                PREFIX, str(root_dervo.resolve())))
-    if len(updates_to_make):
-        log.info('Dervo prefix replacements:\n{}'.format(
-            pprint.pformat(updates_to_make)))
-        cf.update(updates_to_make)
-        cfg = vst.exp.unflatten_nested_dict(cf)
-    return cfg
-
-
-def establish_dervo_configuration(path: Path):
+def _perform_pyeval_updates(
+        snake: Snake, snake_subfolds, pyeval_queries, yml_configs):
     """
-    Define dervo configuration
-    - Where to save outputs, which code to access, etc
+    Obtain values for pyeval queries and update yml configs
+
+    - Find .py files in the snake hierarchy
+    - Create a python scope, populate with pyeval_scripts
+    - Concatenate .py files, pyeval queries into a script, eval in that scope
+    - Retrieve pyeval updates
+    - Update values of yml configs
     """
-    path = path.resolve()
-    snake: Snake = snake_create(path, DEFAULT_ROOT)
-    root_dervo: Path = snake[-1][0]  # @ROOT w.r.t dervo was launched
+    if not len(pyeval_queries):
+        return
 
-    yml_paths = snake_match(snake, DEFAULT_DERVO_YML_CFG)
-    cfgs = [yml_from_file(f) for f in yml_paths]
-    cfgs = [yml_load(DERVO_CFG_DEFAULTS), ] + cfgs
-    dervo_cfg = yml_list_merge(cfgs)
-    dervo_cfg = cfg_replace_prefix(dervo_cfg, root_dervo)
+    log.info('-- {{ PYEVAL updates for YML files')
+    # Load standalone python files
+    py_filepaths = snake_match(snake, FILENAME_PY)
+    pyfiles = {}
+    for path in py_filepaths:
+        lvl = snake_subfolds.index((path.parent))
+        pyfiles[lvl] = path
+    log.debug('pyeval queries\n{}'.format(pyeval_queries))
+    log.debug('pyfiles per scope:\n{}'.format(pprint.pformat(pyfiles)))
 
-    workfolder = get_workfolder_given_path(
-            path, root_dervo, Path(dervo_cfg['output_root']))
-    return snake, dervo_cfg, workfolder, root_dervo
+    # Create python script
+    cfg_script = "_DRV_PYEVAL = {}\n"
+    for lvl, subfold in enumerate(snake_subfolds):
+        lvl_script = ""
+        if lvl in pyfiles:
+            filepath = pyfiles[lvl]
+            lvl_script += f'# {str(filepath)}\n'
+            with filepath.open() as f:
+                lvl_script += f.read()
+        if lvl in pyeval_queries:
+            updates = pyeval_queries[lvl]
+            lvl_script += f"_DRV_PYEVAL[{lvl}] = {{\n"
+            for k, v in updates.items():
+                lvl_script += f"  '{k}': {v},\n"
+            lvl_script += '}\n'
+        if len(lvl_script):
+            lvl_script = (f'\n# lvl={lvl}'
+                f'\n_FOLD = Path("{subfold}")\n') + lvl_script
+            cfg_script += lvl_script
+    cfg_script = '#'*25+'\n'+cfg_script+'#'*25
+    log.info(f'Prepared python script:\n{cfg_script}')
+
+    # Evaluate python script in a separate scope
+    cfg_scope = {}
+    from dervo import pyeval_scripts  # Here to avoid circular import
+    cfg_scope.update(pyeval_scripts.__dict__)
+    # cfg_scope.update({'_ROOT_DERVO': _ROOT_DERVO})
+    code = compile(cfg_script, '<cfg_script>', 'exec')
+    exec(code, cfg_scope)
+
+    # Retrieve evaluated pyeval values, replace them in YML configs
+    pyeval_updates = cfg_scope['_DRV_PYEVAL']
+    for lvl, updates in pyeval_updates.items():
+        yml_config = yml_configs[lvl]
+        for dot_key, value in updates.items():
+            set_dd(yml_config, dot_key, value)
+    # Display replaced values:
+    pyeval_str = "Pyeval values obtained:\n"
+    for lvl, updates in pyeval_updates.items():
+        pyeval_str += "lvl: {} fold: {}\n".format(lvl, snake_subfolds[lvl])
+        for dot_key, value in updates.items():
+            pyeval_str += "  {}: {} -> {}\n".format(
+                    dot_key, pyeval_queries[lvl][dot_key], value)
+    log.debug(pyeval_str)
+    log.info('-- }} PYEVAL updates for YML files')
+
+
+def _yml_merge_summary(yml_merged_config, yml_configs, snake_subfolds):
+    flat0 = flatten_nested_dict(yml_merged_config, '', '.')
+
+    # Record level to display later
+    importlevel = {}
+    for level, yml_config in yml_configs.items():
+        flat = flatten_nested_dict(yml_config, '', '.')
+        for k, v in flat.items():
+            importlevel[k] = level
+
+    # Fancy display
+    mkey = max(map(lambda x: len(x), flat0.keys()), default=0)
+    mlevel = max(importlevel.values(), default=0)
+    row_format = "{:<%d} {:<5} {:<%d} {:}" % (mkey, mlevel)
+    output = ''
+    output += "YML configurations:\n"
+    for lvl, yml_config in yml_configs.items():
+        if lvl >= 0:
+            output += "lvl: {} fold: {}\n".format(lvl, snake_subfolds[lvl])
+    output += row_format.format('key', 'source', '', 'value')+'\n'
+    output += row_format.format('--', '--', '--', '--')+'\n'
+    for key, value in flat0.items():
+        level = importlevel.get(key, '?')
+        levelstars = '*'*importlevel.get(key, 0)
+        output += row_format.format(
+                key, level, levelstars, value)+'\n'
+    return output
+
+
+def build_config_yml_py(path):
+    """
+    Pick up .yml and .py files, evaluate, build final nested config
+    """
+    log.info('- { GET_CFG: Parse experiment configuration')
+    snake: Snake = snake_create(path)
+    snake_subfolds = [x[0] for x in snake][::-1]
+    # Load YML files, Check for possibly pyyeval queries
+    yml_configs, pyeval_queries = _load_yml_check_pyeval(snake, snake_subfolds)
+    # Perform pyeval_queries (if any)
+    _perform_pyeval_updates(snake, snake_subfolds, pyeval_queries, yml_configs)
+    # Add default configs at -1 level, resort
+    yml_configs[-1] = yml_load(DERVO_CFG_DEFAULTS)
+    yml_configs = dict(sorted(yml_configs.items()))
+    # Merge YML configs
+    yml_merged_config = yml_list_merge(yml_configs.values())
+    log.info(_yml_merge_summary(
+        yml_merged_config, yml_configs, snake_subfolds))
+    log.info('- } GET_CFG: Parse experiment configuration')
+    return yml_merged_config

@@ -1,6 +1,15 @@
 *.pyc
 *.swp
-OAR.*
 *.cprof
 *.lprof
+*.mypy_cache
+*.pyc
+*.swp
+*.swo
+*.o
+*.so
+__pycache__
+OAR.*
 slurm-*
+lightning_logs
+lightning_logs/*

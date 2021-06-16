@@ -33,15 +33,6 @@ def docopt_loglevel(loglevel) -> int:
     return loglevel_int
 
 
-def find_exp_path(path_: str) -> Path:
-    path = Path(path_)
-    assert path.exists(), f'Path must exists: {path}'
-    if path.is_file():
-        log.warning('File instead of dir was provided, using its parent instead')
-        path = path.parent
-    return path
-
-
 def platform_info():
     platform_string = f'Node: {platform.node()}'
     oar_jid = subprocess.run('echo $OAR_JOB_ID', shell=True,
