@@ -1,20 +1,14 @@
 import re
 import copy
-import os.path
 import pprint
 import logging
 import itertools
-from typing import (  # NOQA
-        Union, Any, NamedTuple, List, Tuple, Callable, TypeVar, Iterator,
-        Iterable, Sequence)
+from typing import (List, Tuple)
 from pathlib import Path
 
-import yaml  # type: ignore
-
-import vst
-from vst.exp import (unflatten_nested_dict, flatten_nested_dict, set_dd)
-
-from dervo import snippets
+from vst.exp import (
+        flatten_nested_dict, set_dd, gir_merge_dicts,
+        yml_load, yml_from_file)
 
 log = logging.getLogger(__name__)
 
@@ -50,37 +44,10 @@ def snake_match(
     return filepaths
 
 
-class UniqueKeyLoader(yaml.SafeLoader):
-    # https://gist.github.com/pypt/94d747fe5180851196eb#gistcomment-3401011
-    def construct_mapping(self, node, deep=False):
-        mapping = []
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            assert key not in mapping, f'Duplicate key ("{key}") in YAML'
-            mapping.append(key)
-        return super().construct_mapping(node, deep)
-
-
-def yml_load(f):
-    # We disallow duplicate keys
-    cfg = yaml.load(f, UniqueKeyLoader)
-    cfg = {} if cfg is None else cfg
-    return cfg
-
-
-def yml_from_file(filepath: Path):
-    try:
-        with filepath.open('r') as f:
-            return yml_load(f)
-    except Exception as e:
-        log.info(f'Could not load yml at {filepath}')
-        raise e
-
-
 def yml_list_merge(cfgs):
     merged_cfg = {}
     for cfg in cfgs:
-        merged_cfg = snippets.gir_merge_dicts(copy.deepcopy(cfg), merged_cfg)
+        merged_cfg = gir_merge_dicts(copy.deepcopy(cfg), merged_cfg)
     return merged_cfg
 
 

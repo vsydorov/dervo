@@ -39,9 +39,9 @@ def grab(
         # Dervo configuration allows us to look up workfolder
         with vst.logging_disabled(logging.INFO):
             ycfg = build_config_yml_py(path)
-            # If separate output disabled - output goes to path
+            # If separate output disabled - output goes to a subfolder
             if not ycfg['_experiment']['output']['enable']:
-                workfolder = path
+                workfolder = path/'_workfolder'
             else:
                 outputfolder = get_outputfolder_given_path(
                     path, Path(ycfg['_experiment']['output']['dervo_root']),

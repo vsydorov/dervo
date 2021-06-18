@@ -1,57 +1,7 @@
-import subprocess
 import logging
-import platform
 import math
 
-from pathlib import Path
-from typing import (  # NOQA
-        Union, Any, NamedTuple, List, Tuple, Callable, TypeVar, Iterator,
-        Iterable, Sequence)
-
-
 log = logging.getLogger(__name__)
-
-
-def loglevel_str_to_int(loglevel: str) -> int:
-    assert isinstance(loglevel, str)
-    return logging._checkLevel(loglevel)  # type: ignore
-
-
-def loglevel_int_to_str(loglevel: int) -> str:
-    assert isinstance(loglevel, int)
-    return logging.getLevelName(loglevel)
-
-
-def docopt_loglevel(loglevel) -> int:
-    """Tries to get int value softly.
-    For parsing docopt argument
-    """
-    try:
-        loglevel_int = int(loglevel)
-    except ValueError:
-        loglevel_int = loglevel_str_to_int(loglevel)
-    return loglevel_int
-
-
-def platform_info():
-    platform_string = f'Node: {platform.node()}'
-    oar_jid = subprocess.run('echo $OAR_JOB_ID', shell=True,
-            stdout=subprocess.PIPE).stdout.decode().strip()
-    platform_string += ' OAR_JOB_ID: {}'.format(
-            oar_jid if len(oar_jid) else 'None')
-    platform_string += f' System: {platform.system()} {platform.version()}'
-    return platform_string
-
-
-def gir_merge_dicts(user, default):
-    """Girschik's dict merge from F-RCNN python implementation"""
-    if isinstance(user, dict) and isinstance(default, dict):
-        for k, v in default.items():
-            if k not in user:
-                user[k] = v
-            else:
-                user[k] = gir_merge_dicts(user[k], v)
-    return user
 
 
 def indent_mstring(string, indent=4):
