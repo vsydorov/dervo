@@ -13,7 +13,7 @@ import vst
 from vst.exp import (
         resolve_clean_exp_path, add_logging_filehandlers,
         extend_path_reload_modules, import_routine,
-        remove_loghandler_to_handle_error)
+        remove_first_loghandler_before_handling_error)
 
 from dervo.snippets import (force_symlink)
 from dervo.config import (build_config_yml_py)
@@ -137,5 +137,5 @@ def run_experiment(path, co_commit, add_args, fake):
     try:
         experiment_routine(workfolder, ycfg, add_args)
     except Exception as err:
-        remove_loghandler_to_handle_error(err)
+        remove_first_loghandler_before_handling_error(err)
     log.info('- } Execute experiment routine')
