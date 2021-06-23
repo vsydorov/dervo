@@ -40,20 +40,20 @@ def grab(
         with vst.logging_disabled(logging.INFO):
             ycfg = build_config_yml_py(path)
             # If separate output disabled - output goes to a subfolder
-            if not ycfg['_experiment']['output']['enable']:
-                workfolder = path/'_workfolder'
-            else:
+            if ycfg['_experiment']['output']['enable']:
                 outputfolder = get_outputfolder_given_path(
                     path, Path(ycfg['_experiment']['output']['dervo_root']),
                     Path(ycfg['_experiment']['output']['store_root']))
-                # Resolve commit
-                if commit is None:
-                    subfolders = list(outputfolder.iterdir())
-                    if not len(subfolders):
-                        raise RuntimeError('Grab fail: no commit subfolders')
-                    workfolder = subfolders[0]
-                else:
-                    workfolder = outputfolder/commit
+            else:
+                outputfolder = path/'_workfolder'
+            # Resolve commit
+            if commit is None:
+                subfolders = list(outputfolder.iterdir())
+                if not len(subfolders):
+                    raise RuntimeError('Grab fail: no commit subfolders')
+                workfolder = subfolders[0]
+            else:
+                workfolder = outputfolder/commit
         # Now get the item
         item_to_find = workfolder/rel_path
 

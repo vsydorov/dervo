@@ -43,15 +43,16 @@ def create_symlink_to_outputfolder(
 
 def manage_workfolder(path, ycfg, co_commit_sha):
     # If separate output disabled - output goes to a subfolder
-    if not ycfg['_experiment']['output']['enable']:
-        return vst.mkdir(path/'_workfolder')
-    # Create and symlink outputfolder
-    outputfolder = get_outputfolder_given_path(
-        path, Path(ycfg['_experiment']['output']['dervo_root']),
-        Path(ycfg['_experiment']['output']['store_root']))
-    create_symlink_to_outputfolder(outputfolder, path,
-            ycfg['_experiment']['output']['sl_relative'],
-            ycfg['_experiment']['output']['sl_prefix'])
+    if ycfg['_experiment']['output']['enable']:
+        # Create and symlink outputfolder
+        outputfolder = get_outputfolder_given_path(
+            path, Path(ycfg['_experiment']['output']['dervo_root']),
+            Path(ycfg['_experiment']['output']['store_root']))
+        create_symlink_to_outputfolder(outputfolder, path,
+                ycfg['_experiment']['output']['sl_relative'],
+                ycfg['_experiment']['output']['sl_prefix'])
+    else:
+        outputfolder = vst.mkdir(path/'_workfolder')
     # Workfolder - specified by commit
     workfolder = vst.mkdir(outputfolder/co_commit_sha)
     return workfolder
