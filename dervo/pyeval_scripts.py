@@ -8,7 +8,7 @@ from typing import ( # NOQA
 import vst
 
 from dervo.experiment import (
-        get_outputfolder_given_path, manage_workfolder,)
+        get_outputfolder_given_path,)
 from dervo.checkout import (
         get_commit_sha_repo)
 from dervo.config import (
@@ -32,7 +32,9 @@ def grab(
       - get rel_path
     - (optionally) makes sure file exists.
     """
-    path = Path(os.path.normpath(path))  # normalize without resolving symlinks
+    # normalize without resolving symlinks
+    # path = Path(os.path.normpath(path))
+    path = Path(os.path.abspath(path))
     if rel_path is None:
         item_to_find = path
     else:

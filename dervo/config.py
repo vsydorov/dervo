@@ -148,8 +148,9 @@ def _perform_pyeval_updates(
                 lvl_script += f"  '{k}': {v},\n"
             lvl_script += '}\n'
         if len(lvl_script):
-            lvl_script = (f'\n# lvl={lvl}'
-                f'\n_FOLD = Path("{subfold}")\n') + lvl_script
+            lvl_script = (f'\n# lvl={lvl}\n'
+                f'_FOLD = Path("{subfold}");'
+                ' os.chdir(_FOLD)\n') + lvl_script
             cfg_script += lvl_script
     cfg_script = '#'*25+'\n'+cfg_script+'#'*25
     log.info(f'Prepared python script:\n{cfg_script}')
