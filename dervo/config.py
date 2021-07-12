@@ -1,3 +1,4 @@
+import os
 import re
 import copy
 import pprint
@@ -133,7 +134,7 @@ def _perform_pyeval_updates(
     log.debug('pyfiles per scope:\n{}'.format(pprint.pformat(pyfiles)))
 
     # Create python script
-    cfg_script = "_DRV_PYEVAL = {}\n"
+    cfg_script = "from pathlib import Path\nimport os\n_DRV_PYEVAL = {}\n"
     for lvl, subfold in enumerate(snake_subfolds):
         lvl_script = ""
         if lvl in pyfiles:
@@ -149,19 +150,24 @@ def _perform_pyeval_updates(
             lvl_script += '}\n'
         if len(lvl_script):
             lvl_script = (f'\n# lvl={lvl}\n'
-                f'_FOLD = Path("{subfold}");'
-                ' os.chdir(_FOLD)\n') + lvl_script
+                f'_FOLD = Path("{subfold}"); os.chdir(_FOLD)\n') + lvl_script
             cfg_script += lvl_script
     cfg_script = '#'*25+'\n'+cfg_script+'#'*25
     log.info(f'Prepared python script:\n{cfg_script}')
 
-    # Evaluate python script in a separate scope
+    # / Evaluate python script in a separate scope
     cfg_scope = {}
     from dervo import pyeval_scripts  # Here to avoid circular import
-    cfg_scope.update(pyeval_scripts.__dict__)
-    # cfg_scope.update({'_ROOT_DERVO': _ROOT_DERVO})
+    # cfg_scope.update(pyeval_scripts.__dict__)
+    cfg_scope.update({'grab': pyeval_scripts.grab})
     code = compile(cfg_script, '<cfg_script>', 'exec')
+    # This allows inspecting code in PUDB
+    import linecache
+    linecache.cache['<cfg_script>'] = (
+            len(cfg_script), None, cfg_script, '<cfg_script>')
+    cwd_before = os.getcwd()
     exec(code, cfg_scope)
+    os.chdir(cwd_before)  # Restore path to what it was
 
     # Retrieve evaluated pyeval values, replace them in YML configs
     pyeval_updates = cfg_scope['_DRV_PYEVAL']

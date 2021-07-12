@@ -1,4 +1,5 @@
 import os.path
+from os.path import (normpath, join)
 import logging
 from pathlib import Path
 from typing import ( # NOQA
@@ -32,9 +33,10 @@ def grab(
       - get rel_path
     - (optionally) makes sure file exists.
     """
-    # normalize without resolving symlinks
-    # path = Path(os.path.normpath(path))
-    path = Path(os.path.abspath(path))
+    # / normalize without resolving symlinks
+    # TODO: avoid relying on getcwd/chdir. Nested "grab" calls don't play nicely
+    # path = Path(os.path.abspath(path))
+    path = Path(normpath(join(os.getcwd(), path)))
     if rel_path is None:
         item_to_find = path
     else:
