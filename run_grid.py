@@ -30,8 +30,9 @@ from pathlib import Path
 from docopt import docopt  # type: ignore
 
 import vst
+from vst.exp import (resolve_clean_exp_path)
 
-from dervo import experiment, snippets
+from dervo.config import (FILENAME_YML, FILENAME_PY)
 
 DEFAULT_GRID_CFG = 'grid.yml'
 
@@ -80,7 +81,7 @@ def resolve_node(k, v):
 
 class GridManager(object):
     def __init__(self, path):
-        self.path = snippets.find_exp_path(path)
+        self.path = resolve_clean_exp_path(path)
         self.description_path = self.path/DEFAULT_GRID_CFG
         if not self.description_path.exists():
             raise ValueError('No grid description found at {}'.format(
@@ -112,7 +113,7 @@ class GridManager(object):
     def folder_match(cfg_fold, file_contents):
         """Makes sure that folder contains config file and (optionally)
         symlinks"""
-        cfg_file = cfg_fold/experiment.DEFAULT_YML_CFG
+        cfg_file = cfg_fold/FILENAME_YML
         if not cfg_file.exists():
             return False, 'cfg_file not existing'
         if not _content_match(cfg_file, file_contents):
@@ -129,7 +130,7 @@ class GridManager(object):
         for foldname, file_contents, _ in self.folds_and_cfgs:
             cfg_fold = self.path/foldname
             cfg_fold.mkdir(exist_ok=True)
-            cfg_file = cfg_fold/experiment.DEFAULT_YML_CFG
+            cfg_file = cfg_fold/FILENAME_YML
             if cfg_file.exists():
                 if not _content_match(cfg_file, file_contents):
                     log.warning('Grid file contents do not match '
@@ -161,9 +162,8 @@ class GridManager(object):
         to_purge_files = []
         for file in self.path.glob('*'):
             if file.name in (
-                    experiment.DEFAULT_YML_CFG,
-                    experiment.DEFAULT_PY_CFG,
-                    experiment.DEFAULT_DERVO_YML_CFG,
+                    FILENAME_YML,
+                    FILENAME_PY,
                     DEFAULT_GRID_CFG):
                 continue
             else:

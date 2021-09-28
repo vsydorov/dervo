@@ -3,11 +3,10 @@
 Runs one of the experiments in the exp folder
 
 Usage:
-    run_exp.py <path> [options] [--] [<add_args> ...]
+    run_exp.py <path> [<hash>] [options] [--] [<add_args> ...]
 
 Options:
-    --commit <hash>         Check out this commit. [default: RAW]
-    --fake                  Create workfolder, but don't execute
+    -f, --fake              Create workfolder, but don't execute
 
     Logging:
         --log <level>       Level of stdout logging. [default: INFO]
@@ -27,7 +26,8 @@ def main(args):
     log.info('STDOUT loglevel: {}'.format(vst.loglevel_int_to_str(loglevel_int)))
     log.info('|||-------------------------------------------------------|||')
     log.info('    Start of Dervo experiment')
-    run_experiment(args['<path>'], args['--commit'],
+    commit = args['<hash>'] if args['<hash>'] is not None else 'RAW'
+    run_experiment(args['<path>'], commit,
             args['<add_args>'], args['--fake'])
     log.info('    End of Dervo experiment')
     log.info('|||-------------------------------------------------------|||')

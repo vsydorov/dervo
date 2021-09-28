@@ -2,6 +2,7 @@
 *.swp
 *.cprof
 *.lprof
+*.log
 *.mypy_cache
 *.pyc
 *.swp
