@@ -36,7 +36,7 @@ def git_repo_query(code_root: Path) -> Tuple[git.Repo, str, bool]:
         if dirty:
             dirty_diff = repo.git.diff()
             log.info('Repo is dirty')
-            log.debug('Dirty repo diff:\n{}'.format(dirty_diff))
+            log.debug('Dirty repo diff:\n===\n{}\n==='.format(dirty_diff))
     except git.exc.InvalidGitRepositoryError:
         log.info('No git repo found')
         repo, commit_sha, dirty = None, None, False
@@ -159,11 +159,12 @@ Managing code (wrt git commits), obtaining well formed prefix
 
 
 def get_commit_sha_repo(code_root, co_commit):
+    # Query repo here, even if RAW
+    repo, commit_sha, dirty = git_repo_query(code_root)
     # Maybe no checkout is needed?
     if co_commit == 'RAW':
         log.info(f'Running raw code at {code_root}')
         return 'RAW', None
-    repo, commit_sha, dirty = git_repo_query(code_root)
     assert (repo is not None) and (commit_sha is not None), 'repo must exist'
     if co_commit == 'HEAD':
         # co_commit is either SHA or HEAD. If 'HEAD', must not be dirty
