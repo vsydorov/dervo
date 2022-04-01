@@ -10,7 +10,7 @@ Options:
 
     Logging:
         --log <level>       Level of stdout logging. [default: INFO]
-        --lformat <level>   Which formatter to use. [default: extended]
+        --lformat <level>   Which formatter to use. [default: shorter]
 """
 from docopt import docopt
 
