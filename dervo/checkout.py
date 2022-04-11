@@ -16,36 +16,48 @@ import vst
 log = logging.getLogger(__name__)
 
 
-def git_repo_query(code_root: Path) -> Tuple[git.Repo, str, bool]:
+def git_repo_query(code_root: Path) -> git.Repo:
+    # Try to get repo object
     try:
         repo = git.Repo(str(code_root))
-        # Current commit info
-        try:
-            branch = repo.active_branch.name
-        except TypeError as e:
-            if repo.head.is_detached:
-                branch = 'DETACHED_HEAD'
-            else:
-                raise e
-
+    except git.exc.InvalidGitRepositoryError:
+        log.warning('No git repo found')
+        return None
+    # Try to get branch name
+    try:
+        branch_name = repo.active_branch.name
+    except TypeError as e:
+        if repo.head.is_detached:
+            branch_name = 'DETACHED_HEAD'
+        else:
+            log.warning('Could not get git branch')
+            log.exception(e)
+            branch_name = 'UNKNOWN_BRANCH'
+    # Try to get current commit
+    try:
         commit_sha = repo.head.commit.hexsha
         summary = repo.head.commit.summary
-        log.info('Git repo found [branch {}, Commit {}({})]'.format(
-            branch, commit_sha, summary))
-        dirty = repo.is_dirty()
-        if dirty:
-            dirty_diff = repo.git.diff()
-            log.info('Repo is dirty')
-            log.debug('Dirty repo diff:\n===\n{}\n==='.format(dirty_diff))
-    except git.exc.InvalidGitRepositoryError:
-        log.info('No git repo found')
-        repo, commit_sha, dirty = None, None, False
-
-    return repo, commit_sha, dirty
+    except ValueError as e:
+        if len(list(repo.iter_commits('--all'))) == 0:
+            log.warning('No commits in this git repo')
+        else:
+            log.warning('Could not get commit info')
+            log.exception(e)
+        commit_sha = 'UNKNOWN_SHA'
+        summary = 'UNKNOWN_SUMMARY'
+    log.info('Git repo found [branch {}, Commit {}({})]'.format(
+        branch_name, commit_sha, summary))
+    # Check if repo is dirty and log the diff
+    dirty = repo.is_dirty()
+    if dirty:
+        dirty_diff = repo.git.diff()
+        log.info('Repo is dirty')
+        log.debug('Dirty repo diff:\n===\n{}\n==='.format(dirty_diff))
+    return repo
 
 
 def git_get_hexsha(repo, co_commit):
-    # Assign hexsha for commit we are trying to exract
+    """Assign canonical hexsha to commit we are trying to extract"""
     try:
         git_commit = repo.commit(co_commit)
         co_commit_sha = git_commit.hexsha
@@ -159,17 +171,13 @@ Managing code (wrt git commits), obtaining well formed prefix
 
 
 def get_commit_sha_repo(code_root, co_commit):
-    # Query repo here, even if RAW
-    repo, commit_sha, dirty = git_repo_query(code_root)
-    # Maybe no checkout is needed?
-    if co_commit == 'RAW':
-        log.info(f'Running raw code at {code_root}')
+    # Query the repo and log repo information
+    repo = git_repo_query(code_root)
+    # Cases where we don't perform checkout
+    if (co_commit == 'RAW') or (repo is None):
+        log.info(f'No checkout. Running code from {code_root}')
         return 'RAW', None
-    assert (repo is not None) and (commit_sha is not None), 'repo must exist'
-    if co_commit == 'HEAD':
-        # co_commit is either SHA or HEAD. If 'HEAD', must not be dirty
-        assert not dirty, ('We disallow checking out HEAD of dirty repo. '
-                'Call with "--raw" or provide commit sha')
+    # Find the canonical commit sha
     co_commit_sha = git_get_hexsha(repo, co_commit)
     return co_commit_sha, repo
 
