@@ -52,7 +52,7 @@ def manage_workfolder(path, ycfg, co_commit_sha):
                 ycfg['_experiment']['output']['sl_relative'],
                 ycfg['_experiment']['output']['sl_prefix'])
     else:
-        outputfolder = vst.mkdir(path/'_workfolder')
+        outputfolder = vst.mkdir(path/'_outputfolder')
     # Workfolder - specified by commit
     workfolder = vst.mkdir(outputfolder/co_commit_sha)
     return workfolder
@@ -77,9 +77,9 @@ def dump_dervo_stats(workfolder, path,
     from pip._internal.operations import freeze
     log.debug('pip freeze: {}'.format(';'.join(freeze.freeze())))
     # Release previously captured logging records
-    log.info('- { CAPTURED: Loglines before system init')
+    log.info('- [ CAPTURED: Loglines before system init')
     lctr.handle_captured()
-    log.info('- } CAPTURED: Loglines before system init')
+    log.info('- ] CAPTURED')
 
 
 def run_experiment(path, co_commit, add_args, fake):
@@ -110,19 +110,19 @@ def run_experiment(path, co_commit, add_args, fake):
         run_string, lctr, logfilename_debug, logfilename_info)
 
     # Establish code root (clone if necessary)
-    log.info('-- { Code checkout')
+    log.info('- [ Code checkout:')
     actual_code_root = manage_code_checkout(
             repo, co_commit_sha, workfolder, code_root,
             ycfg['_experiment']['checkout']['root'],
             ycfg['_experiment']['checkout']['to_workfolder'],
             ycfg['_experiment']['checkout']['post_cmd'])
     log.info(f'Actual code root: {actual_code_root}')
-    log.info('-- } Code checkout')
+    log.info('- ] Code checkout')
     if repo is not None:
         repo.close()
 
     # Save configuration to the output folder
-    str_cfg = yaml.dump(ycfg, default_flow_style=False)
+    str_cfg = yaml.dump(ycfg, default_flow_style=False, sort_keys=False)
     with (workfolder/'_final_cfg.yml').open('w') as f:
         print(str_cfg, file=f)
     log.debug(f'Final config:\n{str_cfg}')
@@ -134,9 +134,9 @@ def run_experiment(path, co_commit, add_args, fake):
     extend_path_reload_modules(actual_code_root)
     experiment_routine = import_routine(run_string)
     del ycfg['_experiment']  # Strip '_experiment meta' from ycfg
-    log.info('- { Execute experiment routine')
+    log.info('- [ Execute experiment routine')
     try:
         experiment_routine(workfolder, ycfg, add_args)
     except Exception as err:
         remove_first_loghandler_before_handling_error(err)
-    log.info('- } Execute experiment routine')
+    log.info('- ] Execute experiment routine')

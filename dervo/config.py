@@ -4,45 +4,51 @@ import copy
 import pprint
 import logging
 import itertools
-from typing import (List, Tuple)
+from functools import partial
+from typing import (Dict, List, Tuple)
 from pathlib import Path
 
+import vst
 from vst.exp import (
         flatten_nested_dict, set_dd, gir_merge_dicts,
         yml_load, yml_from_file)
 
 log = logging.getLogger(__name__)
 
+pf = partial(pprint.pformat, sort_dicts=False, width=200)
+
+
+# Hardcoded filenames
+FILENAME_ROOT = 'root_cfg.yml'  # Snake stops after seeing ROOT
+FILENAME_YML = 'cfg.yml'
+FILENAME_PY = 'cfg.py'
+
+# Template for PYEVAL (trigger python evaluation inside YML)
+TEMPLATE_PYEVAL = '(PY|py)@(.+)'
 
 # YML configuration helpers
 
-# / Snake  [deepest]  <HHHHHHHH(:)-<  [shallowest]
-Snake = List[Tuple[Path, List[str]]]
-FILENAME_ROOT = 'root_cfg.yml'  # Snake stops after seeing ROOT
+"""
+Snake: sequence of folder ancestors with directory contents
+"""
+Snake = Dict[Path, List[str]]
 
 
 def snake_create(path, stop_filename=FILENAME_ROOT) -> Snake:
     """
     - Starting from 'path' ascend the filesystem tree
+      - [deepest]  <HHHHHHHH(:)-<  [shallowest]
       - Stop when we hit a folder containing 'stop_filename'
-    - Record directory contents into a Snake
+    - Record directory contents
+    - Reverse to [shallowest] -> [deepest]
     """
-    snake = []  # type: List[Tuple[Path, List[str]]]
+    snake_lst = []
     for fold in itertools.chain([path], path.parents):
         files = [x.name for x in fold.iterdir()]
-        snake.append((fold, files))
+        snake_lst.append((fold, files))
         if (stop_filename in files):
             break
-    return snake
-
-
-def snake_match(
-        snake: Snake, match: str, reverse=True):
-    """Get matching filenames from the snake"""
-    filepaths = [path/match for path, files in snake if match in files]
-    if reverse:
-        filepaths = filepaths[::-1]
-    return filepaths
+    return dict(snake_lst[::-1])
 
 
 def yml_list_merge(cfgs):
@@ -53,10 +59,6 @@ def yml_list_merge(cfgs):
 
 
 # Building YML + Python configuration
-
-
-FILENAME_YML = 'cfg.yml'
-FILENAME_PY = 'cfg.py'
 DERVO_CFG_DEFAULTS = """
 _experiment:
     run: ~                  # Experiment in the <module>:<function> format
@@ -75,25 +77,36 @@ _experiment:
         post_cmd: ~             # Execute after checkout (for example "make")
 """
 
-TEMPLATE_PYEVAL = '(PY|py)@(.+)'
 
-
-def _load_yml_check_pyeval(snake: Snake, snake_subfolds):
+def _load_yml_from_snake(
+        snake: Snake, filenames_cfg=[FILENAME_ROOT, FILENAME_YML]
+        ) -> Dict[int, Dict]:
     """
-    Load YML scripts and check for possible pyeval queries
+    Load YML config files from snake
     """
-    # Load YML files
     yml_configs = {}
-    for fold, files in snake[::-1]:
-        lvl = snake_subfolds.index(fold)
-        cfgs = []
-        for cfg_name in ['root_cfg.yml', 'cfg.yml']:
-            if cfg_name in files:
-                cfgs.append(yml_from_file(fold/cfg_name))
+    for lvl, (fold, filenames) in enumerate(snake.items()):
+        cfgs = {filename: yml_from_file(fold/filename)
+                for filename in (set(filenames_cfg) & set(filenames))}
         if len(cfgs):
-            yml_configs[lvl] = yml_list_merge(cfgs)
+            yml_configs[lvl] = yml_list_merge(cfgs.values())
+    yml_str = '\n--- {{{ YML configs per folder\n'
+    for lvl, cfg in yml_configs.items():
+        path = str(list(snake)[lvl])
+        yml_str += ('== lvl: {} {} ==\n{}\n'.format(lvl, path, pf(cfg)))
+    yml_str += '--- }}} YML configs per folder'
+    log.debug(yml_str)
+    return yml_configs
 
-    # Check for possibly pyeval queries
+
+def _find_pyeval_queries(
+        yml_configs: Dict[int, Dict],
+        pyeval_allowed_keys=None,
+        template_pyeval=TEMPLATE_PYEVAL):
+    """
+    Extract PYEVAL queries from yml configs, optionally filter them
+    """
+    # Check for possible pyeval queries
     pyeval_queries = {}
     for lvl, yml_config in yml_configs.items():
         cf = flatten_nested_dict(yml_config, '', '.')
@@ -101,16 +114,37 @@ def _load_yml_check_pyeval(snake: Snake, snake_subfolds):
         for dot_key, value in cf.items():
             if not isinstance(value, str):
                 continue
-            match = re.match(TEMPLATE_PYEVAL, value)
-            if match:
+            if match := re.match(template_pyeval, value):
                 queries[dot_key] = match.group(2)
         if len(queries):
             pyeval_queries[lvl] = queries
-    return yml_configs, pyeval_queries
+
+    # Limit pyeval queries to allowed subset
+    if pyeval_allowed_keys is not None:
+        pyeval_queries_allowed = {}
+        for lvl, querydict in pyeval_queries.items():
+            keys = set(querydict.keys()) & set(pyeval_allowed_keys)
+            querydict_allowed = {k: querydict[k] for k in keys}
+            if len(querydict_allowed):
+                pyeval_queries_allowed[lvl] = querydict_allowed
+        pyeval_queries = pyeval_queries_allowed
+
+    if len(pyeval_queries):
+        pyq_str = '\n--- {{{ Extracted PYEVAL queries:\n'
+        if pyeval_allowed_keys is not None:
+            pyq_str += f'{pyeval_allowed_keys=}\n'
+        pyq_str += pf(pyeval_queries) + '\n'
+        pyq_str += '--- }}} Extracted PYEVAL queries'
+        log.debug(pyq_str)
+    return pyeval_queries
+
+
+def mprefix(s, prefix):
+    return '\n'.join(map(lambda x: f'{prefix}{x}', s.split('\n')))
 
 
 def _perform_pyeval_updates(
-        snake: Snake, snake_subfolds, pyeval_queries, yml_configs):
+        snake: Snake, pyeval_queries, yml_configs):
     """
     Obtain values for pyeval queries and update yml configs
 
@@ -123,19 +157,17 @@ def _perform_pyeval_updates(
     if not len(pyeval_queries):
         return
 
-    log.info('-- {{ PYEVAL updates for YML files')
+    log.info('--- {{{ PYEVAL updates for YML files')
     # Load standalone python files
-    py_filepaths = snake_match(snake, FILENAME_PY)
     pyfiles = {}
-    for path in py_filepaths:
-        lvl = snake_subfolds.index((path.parent))
-        pyfiles[lvl] = path
-    log.debug('pyeval queries\n{}'.format(pyeval_queries))
-    log.debug('pyfiles per scope:\n{}'.format(pprint.pformat(pyfiles)))
+    for lvl, (fold, files) in enumerate(snake.items()):
+        if FILENAME_PY in files:
+            pyfiles[lvl] = fold/FILENAME_PY
+    log.debug('pyfiles per scope:\n{}'.format(pf(pyfiles)))
 
     # Create python script
     cfg_script = "from pathlib import Path\nimport os\n_DRV_PYEVAL = {}\n"
-    for lvl, subfold in enumerate(snake_subfolds):
+    for lvl, (fold, _) in enumerate(snake.items()):
         lvl_script = ""
         if lvl in pyfiles:
             filepath = pyfiles[lvl]
@@ -150,7 +182,7 @@ def _perform_pyeval_updates(
             lvl_script += '}\n'
         if len(lvl_script):
             lvl_script = (f'\n# lvl={lvl}\n'
-                f'_FOLD = Path("{subfold}"); os.chdir(_FOLD)\n') + lvl_script
+                f'_FOLD = Path("{fold}"); os.chdir(_FOLD)\n') + lvl_script
             cfg_script += lvl_script
     cfg_script = '#'*25+'\n'+cfg_script+'#'*25
     log.info(f'Prepared python script:\n{cfg_script}')
@@ -158,15 +190,24 @@ def _perform_pyeval_updates(
     # / Evaluate python script in a separate scope
     cfg_scope = {}
     from dervo import pyeval_scripts  # Here to avoid circular import
-    # cfg_scope.update(pyeval_scripts.__dict__)
-    cfg_scope.update({'grab': pyeval_scripts.grab})
+    cfg_scope.update(pyeval_scripts.PYEVAL_SCOPE)
     code = compile(cfg_script, '<cfg_script>', 'exec')
     # This allows inspecting code in PUDB
     import linecache
     linecache.cache['<cfg_script>'] = (
             len(cfg_script), None, cfg_script, '<cfg_script>')
     cwd_before = os.getcwd()
-    exec(code, cfg_scope)
+    with vst.LogCaptorToRecords(pause_others=True) as lctr:
+        exec(code, cfg_scope)
+    # Manually print all logging outputs from within <cfg_script>
+    if len(lctr.captured) > 0:
+        captured_str = '---- {{{{ CAPTURED_PYEVAL\n'
+        for line in lctr.captured:
+            captured_str += mprefix(
+                    f'{line.name} {line.levelname}: '
+                    + line.getMessage(), '>> ') + '\n'
+        captured_str +='---- }}}} CAPTURED_PYEVAL'
+        log.debug(captured_str)
     os.chdir(cwd_before)  # Restore path to what it was
 
     # Retrieve evaluated pyeval values, replace them in YML configs
@@ -176,17 +217,18 @@ def _perform_pyeval_updates(
         for dot_key, value in updates.items():
             set_dd(yml_config, dot_key, value)
     # Display replaced values:
-    pyeval_str = "Pyeval values obtained:\n"
+    pyeval_str = "---- {{{{ PYEVAL_REPLACED:\n"
     for lvl, updates in pyeval_updates.items():
-        pyeval_str += "lvl: {} fold: {}\n".format(lvl, snake_subfolds[lvl])
+        pyeval_str += "== lvl: {} {} ==\n".format(lvl, list(snake)[lvl])
         for dot_key, value in updates.items():
-            pyeval_str += "  {}: {} -> {}\n".format(
+            pyeval_str += "  + {}:\n    FROM: {}\n    TO: {}\n".format(
                     dot_key, pyeval_queries[lvl][dot_key], value)
+    pyeval_str += "---- }}}} PYEVAL_REPLACED"
     log.debug(pyeval_str)
-    log.info('-- }} PYEVAL updates for YML files')
+    log.info('--- }}} PYEVAL updates for YML files')
 
 
-def _yml_merge_summary(yml_merged_config, yml_configs, snake_subfolds):
+def _yml_merge_summary(yml_merged_config, yml_configs, snake: Snake):
     flat0 = flatten_nested_dict(yml_merged_config, '', '.')
 
     # Record level to display later
@@ -204,7 +246,7 @@ def _yml_merge_summary(yml_merged_config, yml_configs, snake_subfolds):
     output += "YML configurations:\n"
     for lvl, yml_config in yml_configs.items():
         if lvl >= 0:
-            output += "lvl: {} fold: {}\n".format(lvl, snake_subfolds[lvl])
+            output += "lvl: {} fold: {}\n".format(lvl, list(snake)[lvl])
     output += row_format.format('key', 'source', '', 'value')+'\n'
     output += row_format.format('--', '--', '--', '--')+'\n'
     for key, value in flat0.items():
@@ -215,23 +257,21 @@ def _yml_merge_summary(yml_merged_config, yml_configs, snake_subfolds):
     return output
 
 
-def build_config_yml_py(path):
+def build_config_yml_py(path, pyeval_allowed_keys=None):
     """
     Pick up .yml and .py files, evaluate, build final nested config
     """
-    log.info('- { GET_CFG: Parse experiment configuration')
+    log.info('-- {{ GET_CFG: Parse experiment configuration')
     snake: Snake = snake_create(path)
-    snake_subfolds = [x[0] for x in snake][::-1]
-    # Load YML files, Check for possibly pyyeval queries
-    yml_configs, pyeval_queries = _load_yml_check_pyeval(snake, snake_subfolds)
-    # Perform pyeval_queries (if any)
-    _perform_pyeval_updates(snake, snake_subfolds, pyeval_queries, yml_configs)
+
+    yml_configs = _load_yml_from_snake(snake)
+    pyeval_queries = _find_pyeval_queries(yml_configs, pyeval_allowed_keys)
+    _perform_pyeval_updates(snake, pyeval_queries, yml_configs)
     # Add default configs at -1 level, resort
     yml_configs[-1] = yml_load(DERVO_CFG_DEFAULTS)
     yml_configs = dict(sorted(yml_configs.items()))
     # Merge YML configs
     yml_merged_config = yml_list_merge(yml_configs.values())
-    log.info(_yml_merge_summary(
-        yml_merged_config, yml_configs, snake_subfolds))
-    log.info('- } GET_CFG: Parse experiment configuration')
+    log.info(_yml_merge_summary(yml_merged_config, yml_configs, snake))
+    log.info('-- }} GET_CFG: Parse experiment configuration')
     return yml_merged_config
