@@ -84,11 +84,14 @@ def git_repo_perform_checkout_and_postcmd(
     # Create nice repo folder
     vst.mkdir(co_repo_fold)
     git_shared_clone(repo, '.', co_repo_fold, co_commit_sha)
-    # Submodules cloned individually (avoid querying the remote)
-    submodules = repo.git.submodule('status').split('\n')
-    submodules = [x.strip().split(' ')[:2] for x in submodules]
-    for commit_sha, subfold in submodules:
-        git_shared_clone(repo, subfold, co_repo_fold/subfold, commit_sha)
+    # Don't initilize, instead clone submodules individually
+    # This avoid querying the remote url over network. Useful w/o internet
+    # TODO: Make it work for submodules included at lower levels
+    co_repo = git.Repo(str(co_repo_fold))
+    for line in co_repo.git.submodule('status').split('\n'):
+        sm_commit_sha, sm_name = line.split()
+        sm_commit_sha = sm_commit_sha.removeprefix('-')
+        git_shared_clone(repo, sm_name, co_repo_fold/sm_name, sm_commit_sha)
     # Perform post-checkout actions if set
     if post_cmd is not None:
         post_output = None
