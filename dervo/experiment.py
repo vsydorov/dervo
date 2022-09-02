@@ -132,6 +132,7 @@ def run_experiment(path, co_commit, add_args, fake):
 
     # Deal with imports
     extend_path_reload_modules(actual_code_root)
+    assert run_string, f'_experiment.run must be set'
     experiment_routine = import_routine(run_string)
     del ycfg['_experiment']  # Strip '_experiment meta' from ycfg
     log.info('- [ Execute experiment routine')
