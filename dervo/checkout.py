@@ -89,9 +89,10 @@ def git_repo_perform_checkout_and_postcmd(
     # TODO: Make it work for submodules included at lower levels
     co_repo = git.Repo(str(co_repo_fold))
     for line in co_repo.git.submodule('status').split('\n'):
-        sm_commit_sha, sm_name = line.split()
-        sm_commit_sha = sm_commit_sha.removeprefix('-')
-        git_shared_clone(repo, sm_name, co_repo_fold/sm_name, sm_commit_sha)
+        if len(line):
+            sm_commit_sha, sm_name = line.split()
+            sm_commit_sha = sm_commit_sha.removeprefix('-')
+            git_shared_clone(repo, sm_name, co_repo_fold/sm_name, sm_commit_sha)
     # Perform post-checkout actions if set
     if post_cmd is not None:
         post_output = None
