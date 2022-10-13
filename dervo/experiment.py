@@ -100,6 +100,11 @@ def run_experiment(path, co_commit, add_args, fake):
         code_root = ycfg['_experiment']['code_root']
         assert code_root is not None, 'code_root should be set'
         code_root = Path(code_root)
+        # Establish commit to execute
+        if co_commit is None:
+            co_commit = ycfg['_experiment']['commit']
+            log.info('No commit passed, setting '
+                    'as _experiment.commit = {}'.format(co_commit))
         co_commit_sha, repo = get_commit_sha_repo(code_root, co_commit)
         workfolder = manage_workfolder(path, ycfg, co_commit_sha)
 
@@ -132,7 +137,7 @@ def run_experiment(path, co_commit, add_args, fake):
 
     # Deal with imports
     extend_path_reload_modules(actual_code_root)
-    assert run_string, f'_experiment.run must be set'
+    assert run_string, '_experiment.run must be set'
     experiment_routine = import_routine(run_string)
     del ycfg['_experiment']  # Strip '_experiment meta' from ycfg
     log.info('- [ Execute experiment routine')

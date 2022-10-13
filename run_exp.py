@@ -26,8 +26,7 @@ def main(args):
     log.info('STDOUT loglevel: {}'.format(vst.loglevel_int_to_str(loglevel_int)))
     log.info('|||-------------------------------------------------------|||')
     log.info('    Start of Dervo experiment')
-    commit = args['<hash>'] if args['<hash>'] is not None else 'RAW'
-    run_experiment(args['<path>'], commit,
+    run_experiment(args['<path>'], args['<hash>'],
             args['<add_args>'], args['--fake'])
     log.info('    End of Dervo experiment')
     log.info('|||-------------------------------------------------------|||')

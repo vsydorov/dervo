@@ -63,6 +63,7 @@ DERVO_CFG_DEFAULTS = """
 _experiment:
     run: ~                  # Experiment in the <module>:<function> format
     code_root: ~            # Code to checkout, import
+    commit: 'RAW'           # Default commit to execute
 
     output:
         enable: True        # Save outputs to a different folder?
