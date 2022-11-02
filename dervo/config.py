@@ -73,9 +73,12 @@ _experiment:
         sl_prefix: 'LINK_'  # Add this prefix to symlink names
 
     checkout:
-        root: ~                 # Folder where we checkout code versions
-        to_workfolder: False    # Put code in the workfolder
-        post_cmd: ~             # Execute after checkout (for example "make")
+        root: ~                  # Folder where we checkout code versions
+        to_workfolder: False     # Put code in the workfolder
+        post_cmd: ~              # Execute after checkout (for example "make")
+        local_submodules: False  # Manually clone submodules, instead of
+                                 #   checking out from URLs (faster, does not
+                                 #   require internet, but can be buggy)
 """
 
 

@@ -120,7 +120,9 @@ def run_experiment(path, co_commit, add_args, fake):
             repo, co_commit_sha, workfolder, code_root,
             ycfg['_experiment']['checkout']['root'],
             ycfg['_experiment']['checkout']['to_workfolder'],
-            ycfg['_experiment']['checkout']['post_cmd'])
+            ycfg['_experiment']['checkout']['post_cmd'],
+            ycfg['_experiment']['checkout']['local_submodules'],
+            )
     log.info(f'Actual code root: {actual_code_root}')
     log.info('- ] Code checkout')
     if repo is not None:

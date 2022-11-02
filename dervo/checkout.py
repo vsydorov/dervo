@@ -77,22 +77,29 @@ def git_shared_clone(repo, rpath, co_repo_fold, commit_sha):
 
 
 def git_repo_perform_checkout_and_postcmd(
-        repo, co_repo_fold, co_commit_sha, post_cmd, n_post_cmd_tries=2):
+        repo, co_repo_fold, co_commit_sha,
+        post_cmd, local_submodules, n_post_cmd_tries=2):
     """
     Checkout repo to co_repo_fold, copy submodules, run post_cmd code
     """
     # Create nice repo folder
     vst.mkdir(co_repo_fold)
     git_shared_clone(repo, '.', co_repo_fold, co_commit_sha)
-    # Don't initilize, instead clone submodules individually
-    # This avoid querying the remote url over network. Useful w/o internet
-    # TODO: Make it work for submodules included at lower levels
     co_repo = git.Repo(str(co_repo_fold))
-    for line in co_repo.git.submodule('status').split('\n'):
-        if len(line):
-            sm_commit_sha, sm_name = line.split()
-            sm_commit_sha = sm_commit_sha.removeprefix('-')
-            git_shared_clone(repo, sm_name, co_repo_fold/sm_name, sm_commit_sha)
+    if local_submodules:
+        # Do not initialize, instead clone submodules individually
+        # This avoid querying the remote url over network. Useful w/o internet
+        # TODO: Make it work for submodules included at lower levels
+        for line in co_repo.git.submodule('status').split('\n'):
+            if not len(line):
+                sm_commit_sha, sm_name = line.split()
+                sm_commit_sha = sm_commit_sha.removeprefix('-')
+                git_shared_clone(repo, sm_name,
+                        co_repo_fold/sm_name, sm_commit_sha)
+    else:
+        # Remote initialization will fetch from URLs
+        co_repo.git.submodule('init')
+        co_repo.git.submodule('update')
     # Perform post-checkout actions if set
     if post_cmd is not None:
         post_output = None
@@ -130,7 +137,8 @@ def git_repo_is_checkout_complete(co_repo_fold: Path, co_commit_sha: str):
 
 
 def git_repo_careful_checkout(
-        repo, co_repo_fold, co_commit_sha, post_cmd, n_repo_checks=2):
+        repo, co_repo_fold, co_commit_sha,
+        post_cmd, local_submodules, n_repo_checks=2):
     """
     Checkout repo carefully.
     - If folder already exists - wait a bit and check if the repo is good
@@ -138,7 +146,8 @@ def git_repo_careful_checkout(
     """
     if not co_repo_fold.exists():
         git_repo_perform_checkout_and_postcmd(
-                repo, co_repo_fold, co_commit_sha, post_cmd)
+                repo, co_repo_fold, co_commit_sha,
+                post_cmd, local_submodules)
         log.info(f'Checked out code to {co_repo_fold}')
     else:
         # Wait a bit (maybe repo is being checked out by another job)
@@ -156,7 +165,8 @@ def git_repo_careful_checkout(
             co_repo_fold = Path(tempfile.mkdtemp(prefix=datetime_now,
                     dir=str(co_repo_fold.parent), suffix='temp'))
             git_repo_perform_checkout_and_postcmd(
-                    repo, co_repo_fold, co_commit_sha, post_cmd)
+                    repo, co_repo_fold, co_commit_sha,
+                    post_cmd, local_submodules)
             log.info(f'Checked out code to alternative '
                     f'location {co_repo_fold}')
     return co_repo_fold
@@ -190,6 +200,7 @@ def manage_code_checkout(
         repo, co_commit_sha: str, workfolder: Path,
         code_root: Path, checkout_root: str,
         to_workfolder: bool, post_cmd: str,
+        local_submodules: bool,
         ) -> Path:
     log.info(f'Checking out code from {code_root}')
 
@@ -199,7 +210,8 @@ def manage_code_checkout(
         if co_commit_sha != 'RAW':
             # Checkout commit directly
             destination = git_repo_careful_checkout(
-                    repo, destination, co_commit_sha, post_cmd)
+                    repo, destination, co_commit_sha,
+                    post_cmd, local_submodules)
         else:
             if destination.exists():
                 shutil.rmtree(destination, ignore_errors=True)
@@ -210,7 +222,8 @@ def manage_code_checkout(
             assert checkout_root is not None, 'checkout_root should be set'
             destination = Path(checkout_root)/f'{co_repo_basename}/{co_commit_sha}'
             destination = git_repo_careful_checkout(
-                    repo, destination, co_commit_sha, post_cmd)
+                    repo, destination, co_commit_sha,
+                    post_cmd, local_submodules)
         else:
             destination = code_root
     return destination
