@@ -1,0 +1,6 @@
+docopt
+GitPython
+numpy
+pandas
+PyYAML
+tqdm
