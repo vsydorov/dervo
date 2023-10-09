@@ -6,8 +6,6 @@ from typing import ( # NOQA
         Dict, NamedTuple, List, TypeVar, Union, Tuple,
         Any, Callable, Iterator)
 
-import vst
-
 from dervo.experiment import (
         get_outputfolder_given_path,)
 from dervo.config import (
@@ -34,10 +32,19 @@ def get_outputfolder_via_dervo(path):
     return outputfolder
 
 
-def get_outputfolder_via_symlink(path):
-    """ Follow the longest symlink in the folder """
-    log.info(f'%%% Grabbing via symlink from {str(path)} %%%')
+def get_outputfolder_via_guess(path):
+    """
+    Try to guess where dervo.experiment.manage_workfolder puts outputs
+    - Find folder named _outputfolder
+    or
+    - Follow the longest symlink in the folder
+    """
+    log.info(f'%%% Grabbing via guess from {str(path)} %%%')
+    if (outputfolder := path/'_outputfolder').exists():
+        return outputfolder
     symlinks = [str(x) for x in path.iterdir() if os.path.islink(x)]
+    if len(symlinks):
+        raise RuntimeError('No _outputfolder and no symlinks! Could not guess outputfolder')
     longest = Path(max(symlinks, key=len))
     outputfolder = longest.resolve()
     log.info('Resolved:\nFound {}\nvia {}'.format(str(outputfolder), longest.name))
@@ -49,7 +56,7 @@ def grab(
         rel_path: str = None,
         commit: str = None,
         must_exist=True,
-        outputfolder_via='symlink') -> str:
+        outputfolder_via='guess') -> str:
     """
     Several modes:
     * grab(path):
@@ -68,8 +75,8 @@ def grab(
     else:
         if outputfolder_via == 'dervo':
             outputfolder = get_outputfolder_via_dervo(path)
-        elif outputfolder_via == 'symlink':
-            outputfolder = get_outputfolder_via_symlink(path)
+        elif outputfolder_via == 'guess':
+            outputfolder = get_outputfolder_via_guess(path)
         else:
             raise RuntimeError(f'Wrong {outputfolder_via=}')
 
