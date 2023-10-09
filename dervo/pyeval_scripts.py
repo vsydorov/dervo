@@ -43,7 +43,7 @@ def get_outputfolder_via_guess(path):
     if (outputfolder := path/'_outputfolder').exists():
         return outputfolder
     symlinks = [str(x) for x in path.iterdir() if os.path.islink(x)]
-    if len(symlinks):
+    if not len(symlinks):
         raise RuntimeError('No _outputfolder and no symlinks! Could not guess outputfolder')
     longest = Path(max(symlinks, key=len))
     outputfolder = longest.resolve()
