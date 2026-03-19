@@ -1,0 +1,7 @@
+[tool.isort]
+profile = "black"
+group_by_package = true
+line_length = 88
+
+[tool.black]
+line_length = 88
