@@ -19,6 +19,7 @@ DictConfig._repr_pretty_ = lambda self, p, cycle: p.pretty(OC.to_container(self)
 
 # Hardcoded filenames
 ROOT_PREFIX = "root_"  # Snake stops after seeing this ROOT prefix
+DERVO_DEFAULTS = Path(__file__).parent / "defaults.yml"
 
 
 def abspath(path: StrPath):
@@ -258,6 +259,11 @@ def build_config_dag_inheritance(start: Path) -> DictConfig:
 
     # Before merging: Remote empty configs, print configs to be merged
     cfg_paths_ordered = dag_dfs_to_merge_order(pruned_dag, start)
+
+    # Prepend dervo defaults (lowest priority)
+    if DERVO_DEFAULTS.exists():
+        cfg_paths_ordered = [DERVO_DEFAULTS] + cfg_paths_ordered
+
     cfgs_ordered_ = {}
     for cfg_path in cfg_paths_ordered:
         cfgs_ordered_[cfg_path] = _strip_inherit(OC.load(cfg_path))
