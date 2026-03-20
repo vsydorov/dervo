@@ -1,0 +1,7 @@
+_dervo:
+    checkout:
+        folder: ^root/../CHECKOUT   # Default folder where SHA COMMIT subfolders will go
+        post_cmd: ~               # Code to exec after checkout (e.g. "make")
+        local_submodules: False   # Manually clone submodules, instead of
+                                  # checking out from URLs (faster, does not
+                                  # require internet, but weird bugs can happen)
