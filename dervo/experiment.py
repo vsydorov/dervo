@@ -9,14 +9,15 @@ import logging
 from pathlib import Path
 
 import yaml
-from dervo.config import build_config_dag_inheritance, normpath
+from dervo.config import build_config_dag_inheritance, abspath
 
 import vst
 
 log = logging.getLogger(__name__)
 
 
-def _resolve_config_path(path_: str, priority=["cfg.yml", "config.yml"]) -> Path:
+def _help_locate_config(path_: Path, priority=["cfg.yml", "config.yml"]) -> Path:
+    """If dir -> Try to pick up config inside"""
     path = Path(path_)
     assert path.exists(), f"Path must exists: {path}"
     if path.is_dir():
@@ -32,7 +33,7 @@ def _resolve_config_path(path_: str, priority=["cfg.yml", "config.yml"]) -> Path
             inferred = yml_files[0]
         log.warning("Directory provided, inferred config file as {}".format(inferred))
         path = inferred
-    return normpath(path)  # Normalise, don't resolve symlinks
+    return path  # Absolutise to os.getcwd(), don't resolve symlinks
 
 
 def run_experiment(path, co_commit, add_args, fake):
@@ -46,14 +47,13 @@ def run_experiment(path, co_commit, add_args, fake):
     """
     # Capture logs, before we establish location for logfiles
     with vst.LogCaptorToRecords(pause_others=True) as lctr:
-        path = _resolve_config_path(path)
+        path = _help_locate_config(abspath(path))
         # Establish configuration
-        ycfg = build_config_dag_inheritance(path)
-        # Establish workfolder
-        code_root = ycfg["_experiment"]["code_root"]
+        cfg = build_config_dag_inheritance(path)
+        # Establish commit to execute
+        code_root = cfg["_dervo"]["code"]
         assert code_root is not None, "code_root should be set"
         code_root = Path(code_root)
-        # Establish commit to execute
         if co_commit is None:
             co_commit = ycfg["_experiment"]["commit"]
             log.info(

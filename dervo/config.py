@@ -1,13 +1,16 @@
 import os.path
 import logging
+from os import PathLike
 from graphlib import TopologicalSorter
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Union
 
 import yaml
 from omegaconf import DictConfig, OmegaConf as OC
 
 import vst
+
+StrPath = str | PathLike[str]
 
 log = logging.getLogger(__name__)
 
@@ -18,8 +21,43 @@ DictConfig._repr_pretty_ = lambda self, p, cycle: p.pretty(OC.to_container(self)
 ROOT_PREFIX = "root_"  # Snake stops after seeing this ROOT prefix
 
 
-def normpath(path):
+def abspath(path: StrPath):
+    return Path(os.path.abspath(path))
+
+
+def normpath(path: StrPath):
     return Path(os.path.normpath(path))
+
+
+def abspath_drv(caretoken: str, root: Path, cwd: Path):
+    """
+    Resolve a path (possibly caret token) as it would appear inside a config file.
+      - ^root/foo  -> relative to dervo root, strip any other ^.
+      - Resolve relative paths wrt supplied cwd
+    """
+    path = str(caretoken)
+    if path.startswith("^root/"):
+        return normpath(root / path[len("^root/") :])
+    if path.startswith("^"):
+        path = path[1:]
+    p = Path(path)
+    if not p.is_absolute():
+        p = cwd / p
+    return normpath(p)
+
+
+def resolve_caret_token(token, root: Path, cwd: Path):
+    """Resolve fields that may contain ^tokens"""
+    if not isinstance(token, str):
+        return token
+    if not token.startswith("^"):
+        return token
+    if token.startswith("^grab"):
+        raise NotImplementedError()
+    elif token.startswith("^root"):
+        return abspath_drv(token, root, cwd)
+    else:
+        return abspath_drv(token, root, cwd)
 
 
 def find_config_root(start: Path, stopfilename: str) -> Path:
@@ -50,7 +88,9 @@ def walk_parents(cfg_path: Path, root: Path, stopfilename: str) -> list:
     return found
 
 
-def expand_inherit(inherit, cfg_path: Path, root: Path, stopfilename: str) -> list:
+def expand_inherit(
+    inherit: Union[bool, List[str]], cfg_path: Path, root: Path, stopfilename: str
+) -> List[Path]:
     """Expand ^inherit clause into list of source paths, bottom-up order."""
     if inherit is True:
         return walk_parents(cfg_path, root, stopfilename)
@@ -60,10 +100,11 @@ def expand_inherit(inherit, cfg_path: Path, root: Path, stopfilename: str) -> li
     for item in reversed(inherit):
         if item == "^parents":
             sources.extend(walk_parents(cfg_path, root, stopfilename))
-        elif str(item).startswith("^root/"):  # TODO: Unify this
-            sources.append(root / str(item)[len("^root/") :])
         else:
-            sources.append((cfg_path.parent / item).resolve())
+            # Ensure gets caret resolved, even if ^ is missing
+            if not item.startswith("^"):
+                item = "^" + item
+            sources.append(resolve_caret_token(item, root, cfg_path.parent))
     return sources
 
 
@@ -184,9 +225,28 @@ def _strip_inherit(cfg: DictConfig) -> DictConfig:
     return OC.masked_copy(cfg, keys)
 
 
+def resolve_caret_tokens(cfg: DictConfig, cfg_path: Path, root: Path):
+    """Walk cfg values, resolve ^-prefixed strings in place. Returns list of (key, old, new)."""
+    replacements = []
+
+    def walk(obj, key):
+        if isinstance(obj, dict):
+            return {k: walk(v, f"{key}.{k}" if key else k) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [walk(v, f"{key}[{i}]") for i, v in enumerate(obj)]
+        elif isinstance(obj, str) and obj.startswith("^"):
+            resolved = str(resolve_caret_token(obj, root, cfg_path.parent))
+            replacements.append((key, obj, resolved))
+            return resolved
+        return obj
+
+    resolved = OC.create(walk(OC.to_container(cfg, resolve=False), ""))
+    return resolved, replacements
+
+
 def build_config_dag_inheritance(start: Path) -> DictConfig:
     """Load cfg file, resolve ^inherit DAG, merge all in order."""
-    start = normpath(start)
+    start = abspath(start)
     stopfilename = ROOT_PREFIX + start.name
     root = find_config_root(start.parent, stopfilename)
 
@@ -196,35 +256,46 @@ def build_config_dag_inheritance(start: Path) -> DictConfig:
     pruned_dag = prune_dag(dag, start)
     log.info("Config tree (pruned):\n" + dag_tree_str(pruned_dag, start, root))
 
-    # Before merging: Remote empty, print names
-    ordered_cfg_paths = dag_dfs_to_merge_order(pruned_dag, start)
-    ordered_cfgs = {}
-    for cfg_path in ordered_cfg_paths:
-        ordered_cfgs[cfg_path] = _strip_inherit(OC.load(cfg_path))
-    ordered_cfgs_nonempty = {p: cfg for p, cfg in ordered_cfgs.items() if len(cfg)}
+    # Before merging: Remote empty configs, print configs to be merged
+    cfg_paths_ordered = dag_dfs_to_merge_order(pruned_dag, start)
+    cfgs_ordered_ = {}
+    for cfg_path in cfg_paths_ordered:
+        cfgs_ordered_[cfg_path] = _strip_inherit(OC.load(cfg_path))
+    cfgs_ordered = {p: cfg for p, cfg in cfgs_ordered_.items() if len(cfg)}
     lines = ["Merge order:"]
-    for lvl, (p, cfg) in enumerate(ordered_cfgs.items()):
+    for lvl, (p, cfg) in enumerate(cfgs_ordered_.items()):
         lines.append(f"  {lvl}: {_rel_to_root(p, root)}")
         if len(cfg) == 0:
             lines[-1] += " [EMPTY]"
     log.info("\n".join(lines) + "\n")
 
-    # Before merging: Print contents of non-empty
+    # Before merging: resolve caretokens
+    cfgs_cared = {}
+    replacements = {}
+    for p, cfg in cfgs_ordered.items():
+        cfgs_cared[p], replacements[p] = resolve_caret_tokens(cfg, p, root)
+
     lines = ["Configs to merge:", "======="]
-    for lvl, (p, cfg) in enumerate(ordered_cfgs_nonempty.items()):
+    for lvl, (p, cfg) in enumerate(cfgs_cared.items()):
         lines.append(f"--- {lvl}: {_rel_to_root(p, root)} ---")
-        lines.append(OC.to_yaml(cfg, resolve=False).rstrip())
+        token_by_value = {new: old for _, old, new in replacements[p]}
+        for line in OC.to_yaml(cfg, resolve=False).rstrip().split("\n"):
+            for new_val, old_token in token_by_value.items():
+                if f": {new_val}" in line:
+                    line = line + f"  # <--- {old_token}"
+                    break
+            lines.append(line)
         lines.append("")
     if lines[-1] == "":
         lines.pop()
     lines.append("=======")
     log.info("\n".join(lines) + "\n")
 
-    # OC merge, print
-    if len(ordered_cfgs_nonempty) == 0:
+    # Merge all omegaconfs, print
+    if len(cfgs_cared) == 0:
         log.warning("Empty final config")
         return OC.create()
-    merged = OC.merge(*ordered_cfgs_nonempty.values())
+    merged = OC.merge(*cfgs_cared.values())
     lines = ["Merged config (dervo):", "======"]
     lines.append(OC.to_yaml(merged, resolve=False).rstrip())
     lines.append("======")
