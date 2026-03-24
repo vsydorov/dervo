@@ -2,14 +2,16 @@
 Tools related to experiment organization
 """
 
+import copy
 import os.path
 import inspect
 import sys
 import logging
+import importlib
 from pathlib import Path
 
 import yaml
-from omegaconf import DictConfig
+from omegaconf import OmegaConf as OC
 from dervo.config import build_config_dag_inheritance, abspath
 from dervo.git import RAWCOMMIT, get_commit_sha_repo, manage_code_checkout
 
@@ -19,6 +21,19 @@ log = logging.getLogger(__name__)
 
 FOLDER_OUTPUT = "OUT"
 FOLDER_LOGS = "LOGS"
+
+
+def _save_relative_config(workfolder: Path, container: dict, caret_keys: dict):
+    """Save config with caret_key paths expressed relative to workfolder."""
+    container = copy.deepcopy(container)
+    for key, absolute in caret_keys.items():
+        parts = key.split(".")
+        obj = container
+        for part in parts[:-1]:
+            obj = obj[part]
+        obj[parts[-1]] = os.path.relpath(absolute, workfolder)
+    with (workfolder / "CONFIG.drv.relative.yml").open("w") as f:
+        yaml.dump(container, f, default_flow_style=False, sort_keys=False)
 
 
 def _help_locate_config(path_: Path, priority=["cfg.yml", "config.yml"]) -> Path:
@@ -80,6 +95,37 @@ def dump_dervo_stats(
     log.debug("pip freeze: {}".format(";".join(freeze.freeze())))
 
 
+def extend_path_reload_modules(actual_code_root):
+    # Extend pythonpath to allow importing
+    if actual_code_root is not None:
+        sys.path.insert(0, str(actual_code_root))
+    # Unload caches, to allow local version (if present) to take over
+    importlib.invalidate_caches()
+    # Reload vst and then submoduless (avoid issues with __init__ imports)
+    importlib.reload(vst)
+    for k, v in list(sys.modules.items()):
+        if k.startswith("vst"):
+            log.debug(f"Reload {k} {v}")
+            importlib.reload(v)
+
+
+def import_routine(run_string):
+    module_str, experiment_str = run_string.split(":")
+    module = importlib.import_module(module_str)
+    experiment_routine = getattr(module, experiment_str)
+    return experiment_routine
+
+
+def remove_first_loghandler_before_handling_error(err):
+    # Remove first handler(StreamHandler to stderr) to avoid double clutter
+    our_logger = logging.getLogger()
+    assert len(our_logger.handlers), "Logger handlers are empty for some reason"
+    if isinstance(our_logger.handlers[0], logging.StreamHandler):
+        our_logger.removeHandler(our_logger.handlers[0])
+    log.exception("Fatal error in experiment routine")
+    raise err
+
+
 def run_experiment(path, co_commit, add_args, fake):
     """
     Execute the Dervo experiment. Folder structure defines the experiment
@@ -94,7 +140,7 @@ def run_experiment(path, co_commit, add_args, fake):
         log.info("- CAPTURING: Loglines before system init -")
         path = _help_locate_config(abspath(path))
         # Establish configuration
-        cfg: DictConfig = build_config_dag_inheritance(path)
+        cfg, caret_keys = build_config_dag_inheritance(path)
         # Establish full checkout commit sha, if not RAWCOMMIT
         code_root = cfg["_dervo"]["code"]
         assert code_root is not None, "code_root should be set"
@@ -107,7 +153,7 @@ def run_experiment(path, co_commit, add_args, fake):
 
     # Setup logging in the workfolder
     logfilename_debug, logfilename_info = add_logging_filehandlers(workfolder)
-    run_string = cfg["_dervo"]["run"]
+    assert (run_string := cfg["_dervo"].get("run")), "_dervo.run must be defined"
     dump_dervo_stats(
         workfolder, path, run_string, lctr, logfilename_debug, logfilename_info
     )
@@ -130,4 +176,20 @@ def run_experiment(path, co_commit, add_args, fake):
     if repo is not None:
         repo.close()
     log.info(f"Actual code root: {actual_code_root}")
-    log.info("Hello")
+
+    # Save the resolved dervo config
+    container = OC.to_container(cfg, resolve=True)
+    with (workfolder / "CONFIG.drv.yml").open("w") as f:
+        yaml.dump(container, f, default_flow_style=False, sort_keys=False)
+    _save_relative_config(workfolder, container, caret_keys)
+
+    # Properly import the experiment routine
+    extend_path_reload_modules(actual_code_root)
+    experiment_routine = import_routine(run_string)
+
+    log.info("- [ Execute experiment routine")
+    try:
+        experiment_routine(workfolder, cfg, add_args)
+    except Exception as err:
+        remove_first_loghandler_before_handling_error(err)
+    log.info("- ] Execute experiment routine")

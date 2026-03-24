@@ -1,3 +1,4 @@
+import copy
 import os.path
 import logging
 from os import PathLike
@@ -59,6 +60,52 @@ def resolve_caret_token(token, root: Path, cwd: Path):
         return abspath_drv(token, root, cwd)
     else:
         return abspath_drv(token, root, cwd)
+
+
+class CaretAnnotation(str):
+    """str subclass carrying the original caret token, for annotated YAML display."""
+
+    def __new__(cls, value, token):
+        obj = str.__new__(cls, value)
+        obj.token = token
+        return obj
+
+
+class _CaretDumper(yaml.Dumper):
+    pass
+
+
+_CaretDumper.add_representer(
+    CaretAnnotation,
+    lambda dumper, data: dumper.represent_scalar(
+        "tag:yaml.org,2002:str", f"{str(data)}  (<- {data.token})"
+    ),
+)
+
+
+def _walk_omegaconf_leaves(obj, prefix=""):
+    """Yield (key_path, value) for all leaf nodes in a nested dict/list structure."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _walk_omegaconf_leaves(v, f"{prefix}.{k}" if prefix else k)
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from _walk_omegaconf_leaves(v, f"{prefix}[{i}]")
+    else:
+        yield prefix, obj
+
+
+def resolve_caret_tokens(cfg: DictConfig, cfg_path: Path, root: Path):
+    """Resolve ^-prefixed string values in cfg, working on a copy.
+    Returns (resolved_cfg, {key: (token, resolved_path)})."""
+    cfg = copy.deepcopy(cfg)
+    caret_resolutions = {}
+    for key, val in _walk_omegaconf_leaves(OC.to_container(cfg, resolve=False)):
+        if isinstance(val, str) and val.startswith("^"):
+            resolved = str(resolve_caret_token(val, root, cfg_path.parent))
+            caret_resolutions[key] = (val, resolved)
+            OC.update(cfg, key, resolved)
+    return cfg, caret_resolutions
 
 
 def find_config_root(start: Path, stopfilename: str) -> Path:
@@ -226,23 +273,28 @@ def _strip_inherit(cfg: DictConfig) -> DictConfig:
     return OC.masked_copy(cfg, keys)
 
 
-def resolve_caret_tokens(cfg: DictConfig, cfg_path: Path, root: Path):
-    """Walk cfg values, resolve ^-prefixed strings in place. Returns list of (key, old, new)."""
-    replacements = []
-
-    def walk(obj, key):
-        if isinstance(obj, dict):
-            return {k: walk(v, f"{key}.{k}" if key else k) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [walk(v, f"{key}[{i}]") for i, v in enumerate(obj)]
-        elif isinstance(obj, str) and obj.startswith("^"):
-            resolved = str(resolve_caret_token(obj, root, cfg_path.parent))
-            replacements.append((key, obj, resolved))
-            return resolved
-        return obj
-
-    resolved = OC.create(walk(OC.to_container(cfg, resolve=False), ""))
-    return resolved, replacements
+def _configs_to_merge_str(cfgs_resolved, caret_resolutions, root) -> str:
+    """Format resolved configs for logging, annotating caret-resolved values inline."""
+    lines = ["Configs to merge:", "======="]
+    for lvl, (p, cfg) in enumerate(cfgs_resolved.items()):
+        lines.append(f"--- {lvl}: {_rel_to_root(p, root)} ---")
+        container = OC.to_container(cfg, resolve=False)
+        for key, (token, _) in caret_resolutions[p].items():
+            parts = key.split(".")
+            obj = container
+            for part in parts[:-1]:
+                obj = obj[part]
+            obj[parts[-1]] = CaretAnnotation(obj[parts[-1]], token)
+        lines.append(
+            yaml.dump(
+                container, Dumper=_CaretDumper, default_flow_style=False, width=256
+            ).rstrip()
+        )
+        lines.append("")
+    if lines[-1] == "":
+        lines.pop()
+    lines.append("=======")
+    return "\n".join(lines)
 
 
 def build_config_dag_inheritance(start: Path) -> DictConfig:
@@ -257,54 +309,48 @@ def build_config_dag_inheritance(start: Path) -> DictConfig:
     pruned_dag = prune_dag(dag, start)
     log.info("Config tree (pruned):\n" + dag_tree_str(pruned_dag, start, root))
 
-    # Before merging: Remote empty configs, print configs to be merged
+    # * Before merging
+    # ** Order by dfs
     cfg_paths_ordered = dag_dfs_to_merge_order(pruned_dag, start)
-
-    # Prepend dervo defaults (lowest priority)
+    # ** Put dervo defaults at lowest priority
     if DERVO_DEFAULTS.exists():
         cfg_paths_ordered = [DERVO_DEFAULTS] + cfg_paths_ordered
-
+    # ** Remove _inherit keys (their purpose has been served)
     cfgs_ordered_ = {}
     for cfg_path in cfg_paths_ordered:
         cfgs_ordered_[cfg_path] = _strip_inherit(OC.load(cfg_path))
+    # ** Remove empty configs
     cfgs_ordered = {p: cfg for p, cfg in cfgs_ordered_.items() if len(cfg)}
+    # ** Print merge order
     lines = ["Merge order:"]
     for lvl, (p, cfg) in enumerate(cfgs_ordered_.items()):
         lines.append(f"  {lvl}: {_rel_to_root(p, root)}")
         if len(cfg) == 0:
             lines[-1] += " [EMPTY]"
     log.info("\n".join(lines) + "\n")
-
-    # Before merging: resolve caretokens
-    cfgs_cared = {}
-    replacements = {}
+    # ** Resolve caret tokens per-config, record
+    cfgs_resolved = {}
+    caret_resolutions = {}
     for p, cfg in cfgs_ordered.items():
-        cfgs_cared[p], replacements[p] = resolve_caret_tokens(cfg, p, root)
+        cfgs_resolved[p], caret_resolutions[p] = resolve_caret_tokens(cfg, p, root)
+    # ** Print configs and caret resolutions
+    log.info(_configs_to_merge_str(cfgs_resolved, caret_resolutions, root))
 
-    lines = ["Configs to merge:", "======="]
-    for lvl, (p, cfg) in enumerate(cfgs_cared.items()):
-        lines.append(f"--- {lvl}: {_rel_to_root(p, root)} ---")
-        token_by_value = {new: old for _, old, new in replacements[p]}
-        for line in OC.to_yaml(cfg, resolve=False).rstrip().split("\n"):
-            for new_val, old_token in token_by_value.items():
-                if f": {new_val}" in line:
-                    line = line + f"  # <--- {old_token}"
-                    break
-            lines.append(line)
-        lines.append("")
-    if lines[-1] == "":
-        lines.pop()
-    lines.append("=======")
-    log.info("\n".join(lines) + "\n")
-
-    # Merge all omegaconfs, print
-    if len(cfgs_cared) == 0:
+    # Merge. Build caret_keys: flat {key: resolved} for all keys that originated
+    # as caret tokens — last-writer-wins, matching merge priority order.
+    if len(cfgs_resolved) == 0:
         log.warning("Empty final config")
-        return OC.create()
-    merged = OC.merge(*cfgs_cared.values())
+        return OC.create(), {}
+    merged = OC.merge(*cfgs_resolved.values())
+    caret_keys = {}
+    for p in cfgs_resolved:
+        caret_keys.update(
+            {k: resolved for k, (token, resolved) in caret_resolutions[p].items()}
+        )
+
     lines = ["Merged config (dervo):", "======"]
     lines.append(OC.to_yaml(merged, resolve=False).rstrip())
     lines.append("======")
     log.info("\n".join(lines))
 
-    return merged
+    return merged, caret_keys
