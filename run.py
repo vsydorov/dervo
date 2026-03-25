@@ -28,7 +28,7 @@ def main(args):
     log.info("STDOUT loglevel: {}".format(vst.loglevel_int_to_str(loglevel_int)))
     log.info("|||-------------------------------------------------------|||")
     log.info("    Start of Dervo experiment")
-    run_experiment(args["<path>"], args["<hash>"], args["<add_args>"], args["--fake"])
+    run_experiment(args["<path>"], args["<hash>"], args["<add_args>"])
     log.info("    End of Dervo experiment")
     log.info("|||-------------------------------------------------------|||")
 
