@@ -134,8 +134,9 @@ def get_hydra_closure_params(func) -> Dict[str, str]:
     Extract hydra params from @hydra.main closure.
     Resolve config_path to absolute path
     """
+    params = {}
     if not (hasattr(func, "__wrapped__") and func.__closure__ is not None):
-        return None
+        return params
     freevars = func.__code__.co_freevars
     cells = {}
     for name, cell in zip(freevars, func.__closure__):
@@ -143,31 +144,25 @@ def get_hydra_closure_params(func) -> Dict[str, str]:
             cells[name] = cell.cell_contents
         except ValueError:
             pass
-    config_path = cells.get("config_path")
-    if config_path and not os.path.isabs(config_path):
-        # Relative according to what we know is __wrapped__()
-        module_file = inspect.getfile(func.__wrapped__)
-        config_path = os.path.join(os.path.dirname(module_file), config_path)
-    config_name = cells.get("config_name")
-    version_base = cells.get("version_base")
-    return {
-        "config_path": config_path,
-        "config_name": config_name,
-        "version_base": version_base,
-    }
+    for k, v in cells.items():
+        if k in ["config_path", "config_name"]:
+            params[k] = v
+        if k == "config_path" and not os.path.isabs(v):
+            # Relative according to what we know is __wrapped__()
+            module_file = inspect.getfile(func.__wrapped__)
+            params[k] = os.path.join(os.path.dirname(module_file), v)
+    return params
 
 
 def _query_update_hydra_params(routine, module, cfg) -> Dict[str, str]:
     hydra_params = get_hydra_closure_params(routine)
     if "_hydra" in cfg:
         for k, v in cfg["_hydra"].items():
-            if k in ["config_path", "config_name", "version_base"]:
-                hydra_params[k] = cfg["_hydra"][k]
+            if k in ["config_path", "config_name"]:
+                hydra_params[k] = v
             if k == "config_path" and not os.path.isabs(hydra_params[k]):
                 # Relative according to module (hydra closure not gauranteed)
-                hydra_params[k] = os.path.join(
-                    os.path.dirname(module.__file__), hydra_params[k]
-                )
+                hydra_params[k] = os.path.join(os.path.dirname(module.__file__), v)
     return hydra_params
 
 
@@ -184,8 +179,8 @@ def _hydra_update_config(cfg_routine, workfolder, hydra_params, hydra_groups):
 
     # Generate hydra configuration
     initialize_config_dir(
-        config_dir=hydra_params["config_path"],
-        version_base=hydra_params["version_base"],
+        config_dir=hydra_params.get("config_path"),
+        version_base=hydra_params.get("version_base", "1.3"),
         job_name="dervo",
     )
     hydra_groups_overrides = [f"{k}={v}" for k, v in hydra_groups.items()]
