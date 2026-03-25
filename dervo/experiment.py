@@ -9,6 +9,7 @@ import inspect
 import sys
 import logging
 import importlib
+import contextlib
 from typing import Dict
 from pathlib import Path
 
@@ -118,6 +119,16 @@ def import_routine(run_string):
     return experiment_routine, module
 
 
+def remove_first_loghandler_before_handling_error(err):
+    # Remove first handler(StreamHandler to stderr) to avoid double clutter
+    our_logger = logging.getLogger()
+    assert len(our_logger.handlers), "Logger handlers are empty for some reason"
+    if isinstance(our_logger.handlers[0], logging.StreamHandler):
+        our_logger.removeHandler(our_logger.handlers[0])
+    log.exception("Fatal error in experiment routine")
+    raise err
+
+
 def get_hydra_closure_params(func) -> Dict[str, str]:
     """
     Extract hydra params from @hydra.main closure.
@@ -144,99 +155,74 @@ def get_hydra_closure_params(func) -> Dict[str, str]:
         "config_name": config_name,
         "version_base": version_base,
     }
-    # config_path = os.path.normpath(config_path)
-    # import pudb; pudb.set_trace()  # XXX BREAKPOINT # fmt: skip
-    # if config_path is None and config_name is None:
-    #     return None
-    #
-    # config_dir = (
-    #     str(os.path.normpath(Path(module_file).parent / config_path))
-    #     if config_path
-    #     else None
-    # )
 
 
-def apply_hydra_cfg_overrides(params, cfg):
-    """Override hydra params from _hydra config section. Returns updated params dict."""
-    if "_hydra" not in cfg:
-        return params
-    h = cfg["_hydra"]
-    params = dict(params)
-    if "config_path" in h:
-        params["config_dir"] = str(h["config_path"])  # caret-resolved by dervo
-    if "config_name" in h:
-        params["config_name"] = str(h["config_name"])
-    if "version_base" in h:
-        params["version_base"] = str(h["version_base"])
-    if "groups" in h:
-        params["groups"] = list(h["groups"])
-    return params
+def _query_update_hydra_params(routine, module, cfg) -> Dict[str, str]:
+    hydra_params = get_hydra_closure_params(routine)
+    if "_hydra" in cfg:
+        for k, v in cfg["_hydra"].items():
+            if k in ["config_path", "config_name", "version_base"]:
+                hydra_params[k] = cfg["_hydra"][k]
+            if k == "config_path" and not os.path.isabs(hydra_params[k]):
+                # Relative according to module (hydra closure not gauranteed)
+                hydra_params[k] = os.path.join(
+                    os.path.dirname(module.__file__), hydra_params[k]
+                )
+    return hydra_params
 
 
-def get_hydra_main_params(func, cfg):
-    """Merge closure defaults with _hydra config overrides.
-    Returns None if config_name is not set (the only mandatory hydra param)."""
-    params = get_hydra_closure_params(func) or {}
-    params = apply_hydra_cfg_overrides(params, cfg)
-    if not params.get("config_name"):
-        return None
-    params.setdefault("groups", [])
-    return params
+def _hydra_update_config(cfg_routine, workfolder, hydra_params, hydra_groups):
+    """
+    NOTE: This pollutes global scope with hydra stuff (GlobalHydra and HydraConfig).
+      No way around it, since users of hydra sometimes access params via
+      hydra.core.hydra_config.HydraConfig.get()
+    """
+    # Initialise hydra
+    log.info(f"Preparing Hydra config.\n{hydra_params=}\n{hydra_groups=}")
+    from hydra import compose, initialize_config_dir
+    from hydra.core.hydra_config import HydraConfig
 
-
-def call_with_hydra(experiment_routine, hydra_params, cfg, workfolder, add_args):
-    """Set up Hydra via compose API and call the experiment routine."""
-
-    config_dir = hydra_params["config_dir"]
-    config_name = hydra_params["config_name"]
-    version_base = hydra_params.get("version_base")
-    groups = hydra_params.get("groups", [])
-    log.info(
-        f"Hydra config_dir: {config_dir}, config_name: {config_name}, groups: {groups}"
-    )
-
-    # Use unwrapped function if available (avoids hydra.main re-entry)
-    task_fn = getattr(experiment_routine, "__wrapped__", experiment_routine)
-
-    GlobalHydra.instance().clear()
-    with initialize_config_dir(
-        config_dir=config_dir,
-        version_base=version_base,
+    # Generate hydra configuration
+    initialize_config_dir(
+        config_dir=hydra_params["config_path"],
+        version_base=hydra_params["version_base"],
         job_name="dervo",
-    ):
-        full_cfg = compose(
-            config_name=config_name,
-            overrides=groups,
-            return_hydra_config=True,
+    )
+    hydra_groups_overrides = [f"{k}={v}" for k, v in hydra_groups.items()]
+    cfg_hydra = compose(
+        config_name=hydra_params["config_name"],
+        overrides=hydra_groups_overrides,
+        return_hydra_config=True,
+    )
+    # Merge-in dervo config values
+    cfg_hydra = OC.merge(cfg_hydra, cfg_routine)
+    # Update output_dir
+    OC.update(cfg_hydra, "hydra.runtime.output_dir", str(workfolder))
+    # Update the global hydra config (unfortunate necessity)
+    HydraConfig().set_config(cfg_hydra)
+
+    # Separate the internal for hydra config, dump
+    with (workfolder / "CONFIG.hydra.internals.yml").open("w") as f:
+        yaml.dump(
+            OC.to_container(cfg_hydra.hydra, resolve=False),
+            f,
+            default_flow_style=False,
+            sort_keys=False,
         )
-        # Merge dervo config values (non-_ keys) directly into the hydra base config
-        user_keys = [k for k in cfg if not str(k).startswith("_")]
-        task_cfg = OC.merge(full_cfg.cfg, OC.masked_copy(cfg, user_keys))
 
-        OC.update(full_cfg, "hydra.runtime.output_dir", str(workfolder))
-        HydraConfig.instance().set_config(full_cfg)
+    cfg_hydra = copy.deepcopy(cfg_hydra)
+    with open_dict(cfg_hydra):
+        del cfg_hydra["hydra"]
 
-        with (workfolder / "CONFIG.hydra.yml").open("w") as f:
-            yaml.dump(
-                OC.to_container(full_cfg.hydra, resolve=True),
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-
-        log.info(f"Changing cwd to workfolder: {workfolder}")
-        os.chdir(workfolder)
-        task_fn(task_cfg)
-
-
-def remove_first_loghandler_before_handling_error(err):
-    # Remove first handler(StreamHandler to stderr) to avoid double clutter
-    our_logger = logging.getLogger()
-    assert len(our_logger.handlers), "Logger handlers are empty for some reason"
-    if isinstance(our_logger.handlers[0], logging.StreamHandler):
-        our_logger.removeHandler(our_logger.handlers[0])
-    log.exception("Fatal error in experiment routine")
-    raise err
+    with (workfolder / "CONFIG.hydra.yml").open("w") as f:
+        yaml.dump(
+            OC.to_container(cfg_hydra, resolve=False),
+            f,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+    cfg_routine = cfg_hydra
+    return cfg_routine
 
 
 def run_experiment(path, co_commit, add_args):
@@ -303,83 +289,28 @@ def run_experiment(path, co_commit, add_args):
     keys_routine = [k for k in cfg if k not in ["_dervo", "_hydra"]]
     cfg_routine = OC.masked_copy(cfg, keys_routine)
 
+    # Special handling for hydra experiments
+    hydra_params = _query_update_hydra_params(routine, module, cfg)
+    if hydra_params.get("config_name"):
+        hydra_groups = cfg.get("_hydra", {}).get("groups", {})
+        cfg_routine = _hydra_update_config(
+            cfg_routine, workfolder, hydra_params, hydra_groups
+        )
+        # Try unwrapping if looks hydra-wrapped with @main decorator
+        if inspect.getfile(routine).endswith("hydra/main.py"):
+            routine = getattr(routine, "__wrapped__", routine)
+
+    # Force chdir instead of passing workfolder
+    log.info(f"Changing cwd to workfolder: {workfolder}")
+    os.chdir(workfolder)
+
+    # Accomodate optional add_args
+    kwargs_routine = {}
+    if "add_args" in inspect.signature(routine).parameters:
+        kwargs_routine = {"add_args": add_args}
+
     log.info("- [ Execute experiment routine")
     try:
-        hydra_params = get_hydra_closure_params(routine)
-        if "_hydra" in cfg:
-            for k, v in cfg["_hydra"].items():
-                if k in ["config_path", "config_name", "version_base"]:
-                    hydra_params[k] = cfg["_hydra"][k]
-                if k == "config_path" and not os.path.isabs(hydra_params[k]):
-                    # Relative according to module (hydra closure not gauranteed)
-                    hydra_params[k] = os.path.join(
-                        os.path.dirname(module.__file__), hydra_params[k]
-                    )
-        if hydra_params.get("config_name"):
-            # Initialise hydra
-            hydra_groups = cfg.get("_hydra", {}).get("groups", {})
-            log.info(f"Preparing Hydra config.\n{hydra_params=}\n{hydra_groups=}")
-            from hydra import compose, initialize_config_dir
-            from hydra.core.global_hydra import GlobalHydra
-            from hydra.core.hydra_config import HydraConfig
-
-            GlobalHydra.instance().clear()
-
-            # Generate hydra configuration
-            initialize_config_dir(
-                config_dir=hydra_params["config_path"],
-                version_base=hydra_params["version_base"],
-                job_name="dervo",
-            )
-            hydra_groups_overrides = [f"{k}={v}" for k, v in hydra_groups.items()]
-            cfg_hydra = compose(
-                config_name=hydra_params["config_name"],
-                overrides=hydra_groups_overrides,
-                return_hydra_config=True,
-            )
-            # Merge-in dervo config values
-            cfg_hydra = OC.merge(cfg_hydra, cfg_routine)
-            # Update output_dir
-            OC.update(cfg_hydra, "hydra.runtime.output_dir", str(workfolder))
-            # Update the global hydra config (unfortunate necessity)
-            HydraConfig.instance().set_config(cfg_hydra)
-
-            # Separate the internal for hydra config, dump
-            with (workfolder / "CONFIG.hydra.internals.yml").open("w") as f:
-                yaml.dump(
-                    OC.to_container(cfg_hydra.hydra, resolve=False),
-                    f,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
-
-            cfg_hydra = copy.deepcopy(cfg_hydra)
-            with open_dict(cfg_hydra):
-                del cfg_hydra["hydra"]
-
-            with (workfolder / "CONFIG.hydra.yml").open("w") as f:
-                yaml.dump(
-                    OC.to_container(cfg_hydra, resolve=False),
-                    f,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
-
-            cfg_routine = cfg_hydra
-
-            # Try unwrapping if looks hydra-wrapped with @main decorator
-            if inspect.getfile(routine).endswith("hydra/main.py"):
-                routine = getattr(routine, "__wrapped__", routine)
-
-        # Force chdir instead of passing workfolder
-        log.info(f"Changed cwd to workfolder: {workfolder}")
-        os.chdir(workfolder)
-
-        # Accomodate optional add_args
-        kwargs_routine = {}
-        if "add_args" in inspect.signature(routine).parameters:
-            kwargs_routine = {"add_args": add_args}
-
         routine(cfg_routine, **kwargs_routine)
     except Exception as err:
         remove_first_loghandler_before_handling_error(err)
