@@ -28,6 +28,7 @@ from dervo.config import (
     find_config_root,
     walk_parents,
     expand_inherit,
+    resolve_caret_token,
     resolve_caret_tokens,
     abspath,
     dag_tree_str,
@@ -559,3 +560,99 @@ class TestCaretTokens:
         c = OC.to_container(merged, resolve=True)
         assert os.path.isabs(c["paths"]["code"])
         assert "external_code" in c["paths"]["code"]
+
+
+# ===========================================================================
+# Tests: glob caret tokens  (resolve_caret_token directly)
+# ===========================================================================
+
+
+@pytest.fixture
+def glob_tree(tmp_path):
+    """
+    Simulate experiment output folders with different mtimes:
+      group/producer/OUT/aaa/result.txt   (mtime=1000)
+      group/producer/OUT/bbb/result.txt   (mtime=2000)
+      group/producer/OUT/ccc/result.txt   (mtime=1500)
+    """
+    out = tmp_path / "group" / "producer" / "OUT"
+    for name, ts in [("aaa", 1000), ("bbb", 2000), ("ccc", 1500)]:
+        f = out / name / "result.txt"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(name)
+        os.utime(f, (ts, ts))
+        os.utime(f.parent, (ts, ts))
+    return tmp_path
+
+
+class TestGlobCaretTokens:
+    """Tests for ^path[^sort][^sel] glob resolution."""
+
+    def _resolve(self, glob_tree, token):
+        root = glob_tree
+        cwd = glob_tree / "group" / "consumer"
+        return resolve_caret_token(token, root, cwd)
+
+    def test_default_returns_oldest(self, glob_tree):
+        """No sort/sel → mtime_asc^0 → oldest."""
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt")
+        assert r.endswith("/aaa/result.txt")
+
+    def test_newest(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^newest")
+        assert r.endswith("/bbb/result.txt")
+
+    def test_oldest_explicit(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^oldest")
+        assert r.endswith("/aaa/result.txt")
+
+    def test_mtime_desc_is_newest(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^mtime_desc")
+        assert r.endswith("/bbb/result.txt")
+
+    def test_name_asc(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_asc")
+        assert r.endswith("/aaa/result.txt")
+
+    def test_name_desc(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_desc")
+        assert r.endswith("/ccc/result.txt")
+
+    def test_list_newest(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^newest^list")
+        assert isinstance(r, list)
+        assert len(r) == 3
+        assert r[0].endswith("/bbb/result.txt")
+        assert r[-1].endswith("/aaa/result.txt")
+
+    def test_list_name_asc(self, glob_tree):
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_asc^list")
+        assert isinstance(r, list)
+        assert r[0].endswith("/aaa/result.txt")
+        assert r[-1].endswith("/ccc/result.txt")
+
+    def test_no_matches_raises(self, glob_tree):
+        with pytest.raises((FileNotFoundError, AssertionError)):
+            self._resolve(glob_tree, "^../producer/OUT/*/nonexistent.xyz")
+
+    def test_unknown_select_raises(self, glob_tree):
+        with pytest.raises(RuntimeError):
+            self._resolve(glob_tree, "^../producer/OUT/*/result.txt^newest^bogus")
+
+    def test_no_glob_passthrough(self, glob_tree):
+        """Non-glob token returns normalized path without globbing."""
+        r = self._resolve(glob_tree, "^../producer/OUT/aaa/result.txt")
+        assert os.path.isabs(r)
+        assert r.endswith("/producer/OUT/aaa/result.txt")
+
+    def test_inherit_forbids_list(self, glob_tree):
+        """^inherit with a glob that resolves to list → ValueError."""
+        root = glob_tree
+        cwd = glob_tree / "group" / "consumer"
+        with pytest.raises(ValueError, match="Forbidden"):
+            expand_inherit(
+                ["^../producer/OUT/*/result.txt^oldest^list"],
+                cwd / "cfg.yml",
+                root,
+                "root_cfg.yml",
+            )
