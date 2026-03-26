@@ -10,7 +10,7 @@ import sys
 import logging
 import importlib
 import contextlib
-from typing import Dict
+from typing import Dict, List, Union
 from pathlib import Path
 
 import yaml
@@ -34,7 +34,14 @@ def _save_relative_config(workfolder: Path, container: dict, caret_keys: dict):
         obj = container
         for part in parts[:-1]:
             obj = obj[part]
-        obj[parts[-1]] = os.path.relpath(absolute, workfolder)
+        value: Union[str, List[str]]
+        if isinstance(absolute, str):
+            value = os.path.relpath(absolute, workfolder)
+        elif isinstance(absolute, list):
+            value = [os.path.relpath(a, workfolder) for a in absolute]
+        else:
+            raise RuntimeError(f"Wrong type for {absolute=} at {key=}")
+        obj[parts[-1]] = value
     with (workfolder / "CONFIG.drv.relative.yml").open("w") as f:
         yaml.dump(container, f, default_flow_style=False, sort_keys=False)
 
