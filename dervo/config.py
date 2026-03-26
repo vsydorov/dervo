@@ -86,8 +86,7 @@ def resolve_caret_token(token: str, root: Path, cwd: Path) -> Union[str, List[st
     if comp_select is None:
         comp_select = "0"
     # ** Sort
-    matches = glob.glob(ppath, recursive=True, include_hidden=True)
-    matches = [os.path.normpath(m) for m in matches]
+    matches = glob.glob(os.path.normpath(ppath), recursive=True, include_hidden=True)
     if comp_sort == "name_asc":
         matches = sorted(matches)
     elif comp_sort == "name_desc":
