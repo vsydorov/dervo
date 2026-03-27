@@ -9,21 +9,54 @@ import inspect
 import sys
 import logging
 import importlib
-import contextlib
+import platform
+import random
+import string
+import subprocess
+from datetime import datetime
 from typing import Dict, List, Union
 from pathlib import Path
 
 import yaml
 from omegaconf import OmegaConf as OC, open_dict
-from dervo.config import build_config_dag_inheritance, abspath
-from dervo.git import RAWCOMMIT, get_commit_sha_repo, manage_code_checkout
 
-import vst
+from dervo.config import build_config_dag_inheritance
+from dervo.git import RAWCOMMIT, get_commit_sha_repo, manage_code_checkout
+from dervo.logging import add_filehandler, LogCaptorToRecords
+from dervo.misc import mkdir, abspath
 
 log = logging.getLogger(__name__)
 
 FOLDER_OUTPUT = "OUT"
 FOLDER_LOGS = "LOGS"
+
+
+def is_venv():
+    # https://stackoverflow.com/questions/1871549/determine-if-python-is-running-inside-virtualenv
+    return hasattr(sys, "real_prefix") or (
+        hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
+    )
+
+
+def get_experiment_id_string():
+    time_now = datetime.now()
+    str_time = time_now.strftime("%Y-%m-%d_%H-%M-%S")
+    str_ms = time_now.strftime("%f")
+    str_rnd = str_ms[:3] + "".join(random.choices(string.ascii_uppercase, k=3))
+    str_node = platform.node()
+    return f"{str_time}_{str_rnd}_{str_node}"
+
+
+def platform_info():
+    platform_string = f"Node: {platform.node()}"
+    oar_jid = (
+        subprocess.run("echo $OAR_JOB_ID", shell=True, stdout=subprocess.PIPE)
+        .stdout.decode()
+        .strip()
+    )
+    platform_string += " OAR_JOB_ID: {}".format(oar_jid if len(oar_jid) else "None")
+    platform_string += f" System: {platform.system()} {platform.version()}"
+    return platform_string
 
 
 def _save_relative_config(workfolder: Path, container: dict, caret_keys: dict):
@@ -71,12 +104,12 @@ def add_logging_filehandlers(workfolder):
     assert isinstance(
         logging.getLogger().handlers[0], logging.StreamHandler
     ), "First handler should be StreamHandler"
-    logfolder = vst.mkdir(workfolder / FOLDER_LOGS)
-    id_string = vst.get_experiment_id_string()
-    logfilename_debug = vst.add_filehandler(
+    logfolder = mkdir(workfolder / FOLDER_LOGS)
+    id_string = get_experiment_id_string()
+    logfilename_debug = add_filehandler(
         logfolder / f"{id_string}.DEBUG.log", logging.DEBUG, "extended"
     )
-    logfilename_info = vst.add_filehandler(
+    logfilename_info = add_filehandler(
         logfolder / f"{id_string}.INFO.log", logging.INFO, "short"
     )
     return logfilename_debug, logfilename_info
@@ -88,11 +121,11 @@ def dump_dervo_stats(
     # Release previously captured logging records
     lctr.handle_captured()
     log.info(inspect.cleandoc(f"""Initialized the logging system!
-        Platform: \t\t{vst.platform_info()}
+        Platform: \t\t{platform_info()}
         Experiment path: \t{path}
         Workfolder path: \t{workfolder}
         --- Python --
-        VENV:\t\t\t{vst.is_venv()}
+        VENV:\t\t\t{is_venv()}
         Prefix:\t\t\t{sys.prefix}
         --- Code ---
         Experiment: \t\t{run_string}
@@ -111,12 +144,12 @@ def extend_path_reload_modules(actual_code_root):
         sys.path.insert(0, str(actual_code_root))
     # Unload caches, to allow local version (if present) to take over
     importlib.invalidate_caches()
-    # Reload vst and then submoduless (avoid issues with __init__ imports)
-    importlib.reload(vst)
-    for k, v in list(sys.modules.items()):
-        if k.startswith("vst"):
-            log.debug(f"Reload {k} {v}")
-            importlib.reload(v)
+    # # Reload vst and then submoduless (avoid issues with __init__ imports)
+    # importlib.reload(vst)
+    # for k, v in list(sys.modules.items()):
+    #     if k.startswith("vst"):
+    #         log.debug(f"Reload {k} {v}")
+    #         importlib.reload(v)
 
 
 def import_routine(run_string):
@@ -141,7 +174,7 @@ def get_hydra_closure_params(func) -> Dict[str, str]:
     Extract hydra params from @hydra.main closure.
     Resolve config_path to absolute path
     """
-    params = {}
+    params: Dict[str, str] = {}
     if not (hasattr(func, "__wrapped__") and func.__closure__ is not None):
         return params
     freevars = func.__code__.co_freevars
@@ -236,7 +269,7 @@ def run_experiment(path, co_commit, add_args):
         - 'add_args' are passed additionally to experiment
     """
     # Capture logs, before we establish location for logfiles
-    with vst.LogCaptorToRecords(pause="file") as lctr:
+    with LogCaptorToRecords(pause="file") as lctr:
         log.info("- CAPTURING: Loglines before system init -")
         path = _help_locate_config(abspath(path))
         # Establish configuration
@@ -249,7 +282,7 @@ def run_experiment(path, co_commit, add_args):
             co_commit = cfg["_dervo"].get("commit", RAWCOMMIT)
             log.info("No commit passed, setting _dervo.commit = {}".format(co_commit))
         co_commit_sha, repo = get_commit_sha_repo(code_root, co_commit)
-        workfolder = vst.mkdir(path.parent / FOLDER_OUTPUT / co_commit_sha)
+        workfolder = mkdir(path.parent / FOLDER_OUTPUT / co_commit_sha)
 
     # Setup logging in the workfolder
     logfilename_debug, logfilename_info = add_logging_filehandlers(workfolder)

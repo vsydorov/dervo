@@ -5,10 +5,11 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import git
 
-import vst
+from dervo.misc import mkdir
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ log = logging.getLogger(__name__)
 RAWCOMMIT = "RAW"
 
 
-def git_repo_query(code_root: Path) -> git.Repo:
+def git_repo_query(code_root: Path) -> Optional[git.Repo]:
     # Try to get repo object
     try:
         repo = git.Repo(str(code_root))
@@ -25,7 +26,7 @@ def git_repo_query(code_root: Path) -> git.Repo:
         return None
     # Try to get branch name
     try:
-        branch_name = repo.active_branch.name
+        branch_name: str = repo.active_branch.name
     except TypeError as e:
         if repo.head.is_detached:
             branch_name = "DETACHED_HEAD"
@@ -35,8 +36,8 @@ def git_repo_query(code_root: Path) -> git.Repo:
             branch_name = "UNKNOWN_BRANCH"
     # Try to get current commit
     try:
-        commit_sha = repo.head.commit.hexsha
-        summary = repo.head.commit.summary
+        commit_sha: str = repo.head.commit.hexsha
+        summary: str = str(repo.head.commit.summary)
     except ValueError as e:
         if len(list(repo.iter_commits("--all"))) == 0:
             log.warning("No commits in this git repo")
@@ -54,7 +55,7 @@ def git_repo_query(code_root: Path) -> git.Repo:
     dirty = repo.is_dirty()
     if dirty:
         dirty_diff = repo.git.diff()
-        log.info("Repo is dirty")
+        log.info("Repo is dirty. See diff in DEBUG.")
         log.debug("Dirty repo diff:\n===\n{}\n===".format(dirty_diff))
     return repo
 
@@ -72,11 +73,11 @@ def git_get_hexsha(repo, co_commit):
 
 
 def get_commit_sha_repo(code_root, co_commit):
+    # Query the repo and log repo information
+    repo = git_repo_query(code_root)
     if co_commit == RAWCOMMIT:
         log.info(f"Commit is {RAWCOMMIT}. Running code from {code_root}")
         return RAWCOMMIT, None
-    # Query the repo and log repo information
-    repo = git_repo_query(code_root)
     if repo is None:
         log.info(f"No git repo detected. Running code from {code_root}")
         return RAWCOMMIT, None
@@ -112,7 +113,7 @@ def git_repo_perform_checkout_and_postcmd(
     Checkout repo to co_repo_fold, copy submodules, run post_cmd code
     """
     # Create nice repo folder
-    vst.mkdir(co_repo_fold)
+    mkdir(co_repo_fold)
     git_shared_clone(repo, ".", co_repo_fold, co_commit_sha)
     co_repo = git.Repo(str(co_repo_fold))
     if local_submodules:

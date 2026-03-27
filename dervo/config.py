@@ -4,14 +4,13 @@ import copy
 import os.path
 import logging
 import yaml
-from os import PathLike
 from graphlib import TopologicalSorter
 from pathlib import Path
 from typing import Dict, List, Union, Tuple, Any, Iterator, Optional, Set
 
 from omegaconf import DictConfig, OmegaConf as OC, open_dict
 
-StrPath = str | PathLike[str]
+from dervo.misc import abspath
 
 log = logging.getLogger(__name__)
 
@@ -23,14 +22,6 @@ setattr(
 # Hardcoded filenames
 ROOT_PREFIX = "root_"  # Snake stops after seeing this ROOT prefix
 DERVO_DEFAULTS = Path(__file__).parent / "defaults.yml"
-
-
-def abspath(path: StrPath):
-    return Path(os.path.abspath(path))
-
-
-def normpath(path: StrPath):
-    return Path(os.path.normpath(path))
 
 
 GLOB_CHARS = re.compile(r"[*?\[]")
