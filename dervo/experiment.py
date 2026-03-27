@@ -207,7 +207,9 @@ def _query_update_hydra_params(routine, module, cfg) -> Dict[str, str]:
     return hydra_params
 
 
-def _hydra_update_config(cfg_routine, workfolder, hydra_params, hydra_groups):
+def _hydra_update_config(
+    cfg_routine, workfolder, hydra_params, hydra_groups, ddp_suffix
+):
     """
     NOTE: This pollutes global scope with hydra stuff (GlobalHydra and HydraConfig).
       No way around it, since users of hydra sometimes access params via
@@ -238,25 +240,27 @@ def _hydra_update_config(cfg_routine, workfolder, hydra_params, hydra_groups):
     HydraConfig().set_config(cfg_hydra)
 
     # Separate the internal for hydra config, dump
-    with (workfolder / "CONFIG.hydra.internals.yml").open("w") as f:
-        yaml.dump(
-            OC.to_container(cfg_hydra.hydra, resolve=False),
-            f,
-            default_flow_style=False,
-            sort_keys=False,
-        )
+    if not ddp_suffix:
+        with (workfolder / "CONFIG.hydra.internals.yml").open("w") as f:
+            yaml.dump(
+                OC.to_container(cfg_hydra.hydra, resolve=False),
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+            )
 
     cfg_hydra = copy.deepcopy(cfg_hydra)
     with open_dict(cfg_hydra):
         del cfg_hydra["hydra"]
 
-    with (workfolder / "CONFIG.hydra.yml").open("w") as f:
-        yaml.dump(
-            OC.to_container(cfg_hydra, resolve=False),
-            f,
-            default_flow_style=False,
-            sort_keys=False,
-        )
+    if not ddp_suffix:
+        with (workfolder / "CONFIG.hydra.yml").open("w") as f:
+            yaml.dump(
+                OC.to_container(cfg_hydra, resolve=False),
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+            )
     cfg_routine = cfg_hydra
     return cfg_routine
 
@@ -274,13 +278,50 @@ def resolve_workfolder_pattern(
     return workfolder
 
 
-def run_experiment(path, co_commit, add_args):
+def _check_ddp(args_add):
+    # Check if some tool (Lightning DDP?) is re-running us with extra argumnets
+    ddp_rerun = False
+    ddp_suffix = ""
+    if "---guard" in args_add:
+        log.info(f"!!!!! Detected rerun -> Found ---guard. {sys.argv=} {args_add=}")
+        # Break into args_add / args_extra on the separator
+        sep = args_add.index("---guard")
+        assert args_add[sep - 1] == "--", "Expected '-- ---guard' together"
+        args_extra = args_add[sep + 1 :]
+        args_add = args_add[: sep - 1]
+        ddp_rerun = any(
+            arg.startswith("hydra.job.name=train_ddp_process") for arg in args_extra
+        )
+        if ddp_rerun:
+            ddp_world_size = (
+                subprocess.run("echo $WORLD_SIZE", shell=True, stdout=subprocess.PIPE)
+                .stdout.decode()
+                .strip()
+            )
+            ddp_node_rank = (
+                subprocess.run("echo $NODE_RANK", shell=True, stdout=subprocess.PIPE)
+                .stdout.decode()
+                .strip()
+            )
+            ddp_local_rank = (
+                subprocess.run("echo $LOCAL_RANK", shell=True, stdout=subprocess.PIPE)
+                .stdout.decode()
+                .strip()
+            )
+            ddp_suffix = ".ddp_world{}_node{}_local{}".format(
+                ddp_world_size, ddp_node_rank, ddp_local_rank
+            )
+            log.info("Detected DDP rerun, Suffix={}".format(ddp_suffix))
+    return ddp_suffix
+
+
+def run_experiment(path, co_commit, args_add):
     """
     Execute the Dervo experiment. Folder structure defines the experiment
     Args:
         - 'path' points to an experiment folder.
         - 'co_commit' if not RAW - check out and run that commit
-        - 'add_args' are passed additionally to experiment
+        - 'args_add' are passed additionally to experiment
     """
     # Capture logs, before we establish location for logfiles
     with LogCaptorToRecords(pause="file") as lctr:
@@ -301,8 +342,10 @@ def run_experiment(path, co_commit, add_args):
             path, cfg["_dervo"]["workfolder"], co_commit_sha
         )
 
+    ddp_suffix = _check_ddp(args_add)
+
     # Setup logging in the workfolder
-    id_string = get_experiment_id_string()
+    id_string = get_experiment_id_string() + ddp_suffix
     logging_cfg = cfg["_dervo"]["logging"]
     logfilehandlers = add_logging_filehandlers(
         workfolder,
@@ -336,9 +379,10 @@ def run_experiment(path, co_commit, add_args):
 
     # Save the resolved dervo config
     container = OC.to_container(cfg, resolve=True)
-    with (workfolder / "CONFIG.drv.yml").open("w") as f:
-        yaml.dump(container, f, default_flow_style=False, sort_keys=False)
-    _save_relative_config(workfolder, container, caret_keys)
+    if not ddp_suffix:
+        with (workfolder / "CONFIG.drv.yml").open("w") as f:
+            yaml.dump(container, f, default_flow_style=False, sort_keys=False)
+        _save_relative_config(workfolder, container, caret_keys)
 
     # Properly import the experiment routine
     extend_path_reload_modules(actual_code_root)
@@ -353,7 +397,7 @@ def run_experiment(path, co_commit, add_args):
     if hydra_params.get("config_name"):
         hydra_groups = cfg.get("_hydra", {}).get("groups", {})
         cfg_routine = _hydra_update_config(
-            cfg_routine, workfolder, hydra_params, hydra_groups
+            cfg_routine, workfolder, hydra_params, hydra_groups, ddp_suffix
         )
         # Try unwrapping if looks hydra-wrapped with @main decorator
         if inspect.getfile(routine).endswith("hydra/main.py"):
@@ -363,12 +407,18 @@ def run_experiment(path, co_commit, add_args):
     log.info(f"Changing cwd to workfolder: {workfolder}")
     os.chdir(workfolder)
 
-    # Accomodate optional add_args
+    # Accomodate optional args_add
     kwargs_routine = {}
-    if "add_args" in inspect.signature(routine).parameters:
-        kwargs_routine = {"add_args": add_args}
+    if "args_add" in inspect.signature(routine).parameters:
+        kwargs_routine = {"args_add": args_add}
 
     log.info("- [ Execute experiment routine")
+
+    # Set sys.argv for DDP re-launch compatibility
+    # Lightning's DDP appends hydra overrides to sys.argv[1:]
+    # The appending "-- ---guard" ensures we can catch them
+    if "---guard" not in sys.argv:
+        sys.argv = sys.argv + ["--", "---guard"]
     try:
         routine(cfg_routine, **kwargs_routine)
     except Exception as err:
