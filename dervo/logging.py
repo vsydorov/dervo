@@ -1,4 +1,5 @@
 import logging
+from typing import Union
 
 log = logging.getLogger(__name__)
 
@@ -45,13 +46,14 @@ def reasonable_logging_setup(stream_loglevel: int, formatter="extended"):
     return logger
 
 
-def docopt_loglevel(loglevel) -> int:
+def docopt_loglevel(loglevel: Union[str, int]) -> int:
     """Tries to get int value softly.
     For parsing docopt argument
     """
     try:
         loglevel_int = int(loglevel)
     except ValueError:
+        assert isinstance(loglevel, str)
         loglevel_int = loglevel_str_to_int(loglevel)
     return loglevel_int
 

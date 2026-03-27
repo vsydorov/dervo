@@ -2,7 +2,7 @@
 """
 Enter point for dervo 0.2
 
-Runs one of the experiments in the exp folder
+Runs an experiment defined by <path> (and its parents, when inherited)
 
 Usage:
     run.py <path> [<hash>] [options] [--] [<add_args> ...]
@@ -19,7 +19,7 @@ from dervo.experiment import run_experiment
 from dervo.logging import docopt_loglevel, loglevel_int_to_str, reasonable_logging_setup
 
 
-def main(args):
+def main(args: docopt.Dict):
     loglevel_int: int = docopt_loglevel(args.get("--log"))
     log = reasonable_logging_setup(loglevel_int, args["--lformat"])
     log.info("STDOUT loglevel: {}".format(loglevel_int_to_str(loglevel_int)))
