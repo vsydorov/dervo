@@ -8,21 +8,22 @@ Usage:
     run.py <path> [<hash>] [options] [--] [<add_args> ...]
 
 Options:
-    Logging:
-        --log <level>       Level of stdout logging. [default: INFO]
-        --lformat <level>   Which formatter to use. [default: shorter]
+    Default stream logging:
+        --loglvl <level>     Level of logging (str/int). [default: INFO]
+        --logform <name>     Formatter preset. [default: shorter]
+        --logstream <name>   Stream to log to (stderr/stdout). [default: stderr]
 """
 
 from docopt import docopt
 
 from dervo.experiment import run_experiment
-from dervo.logging import docopt_loglevel, loglevel_int_to_str, reasonable_logging_setup
+from dervo.logging import parse_loglevel, logging_init
 
 
 def main(args: docopt.Dict):
-    loglevel_int: int = docopt_loglevel(args.get("--log"))
-    log = reasonable_logging_setup(loglevel_int, args["--lformat"])
-    log.info("STDOUT loglevel: {}".format(loglevel_int_to_str(loglevel_int)))
+    loglevel_int, loglevel_str = parse_loglevel(args.get("--loglvl"))
+    log = logging_init(loglevel_int, args["--logform"], args["--logstream"])
+    log.info("STDOUT loglevel: {}/{}".format(loglevel_int, loglevel_str))
     log.info("|||-------------------------------------------------------|||")
     log.info("    Start of Dervo experiment")
     run_experiment(args["<path>"], args["<hash>"], args["<add_args>"])

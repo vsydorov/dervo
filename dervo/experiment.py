@@ -19,10 +19,15 @@ from pathlib import Path
 
 import yaml
 from omegaconf import OmegaConf as OC, open_dict
+from pip._internal.operations import freeze
 
 from dervo.config import build_config_dag_inheritance
 from dervo.git import RAWCOMMIT, get_commit_sha_repo, manage_code_checkout
-from dervo.logging import add_filehandler, LogCaptorToRecords
+from dervo.logging import (
+    add_logging_filehandlers,
+    clamp_package_loglevels,
+    LogCaptorToRecords,
+)
 from dervo.misc import mkdir, abspath
 
 log = logging.getLogger(__name__)
@@ -39,8 +44,11 @@ def is_venv():
 
 
 def get_experiment_id_string():
+    """
+    Unique-ish string to indenify experiment start time
+    """
     time_now = datetime.now()
-    str_time = time_now.strftime("%Y-%m-%d_%H-%M-%S")
+    str_time = time_now.strftime("%Y-%m-%d-%H-%M-%S")
     str_ms = time_now.strftime("%f")
     str_rnd = str_ms[:3] + "".join(random.choices(string.ascii_uppercase, k=3))
     str_node = platform.node()
@@ -49,12 +57,6 @@ def get_experiment_id_string():
 
 def platform_info():
     platform_string = f"Node: {platform.node()}"
-    oar_jid = (
-        subprocess.run("echo $OAR_JOB_ID", shell=True, stdout=subprocess.PIPE)
-        .stdout.decode()
-        .strip()
-    )
-    platform_string += " OAR_JOB_ID: {}".format(oar_jid if len(oar_jid) else "None")
     platform_string += f" System: {platform.system()} {platform.version()}"
     return platform_string
 
@@ -99,42 +101,41 @@ def _help_locate_config(path_: Path, priority=["cfg.yml", "config.yml"]) -> Path
     return path  # Absolutise to os.getcwd(), don't resolve symlinks
 
 
-def add_logging_filehandlers(workfolder):
-    """Create DEBUG/INFO logging files, start logging"""
-    assert isinstance(
-        logging.getLogger().handlers[0], logging.StreamHandler
-    ), "First handler should be StreamHandler"
-    logfolder = mkdir(workfolder / FOLDER_LOGS)
-    id_string = get_experiment_id_string()
-    logfilename_debug = add_filehandler(
-        logfolder / f"{id_string}.DEBUG.log", logging.DEBUG, "extended"
+def dump_dervo_stats(workfolder, path, run_string, logfilehandlers):
+    messages = []
+    messages.append("Initialized the logging system!")
+    messages.append("--- Paths ---")
+    messages.append(f"Experiment path:         {path}")
+    messages.append(f"Workfolder path:         {workfolder}")
+    for k, v in logfilehandlers.items():
+        messages.append(
+            "log {} ({} / {}):    {}".format(
+                k,
+                v["loglevel_int"],
+                v["loglevel_str"],
+                v["logfilepath"],
+            )
+        )
+    messages.append("--- Platform ---")
+    messages.append(f"Node:   {platform.node()}")
+    messages.append(f"System: {platform.system()} / {platform.version()}")
+    # todo : add slurm job id
+    oar_jobid = (
+        subprocess.run("echo $OAR_JOB_ID", shell=True, stdout=subprocess.PIPE)
+        .stdout.decode()
+        .strip()
     )
-    logfilename_info = add_filehandler(
-        logfolder / f"{id_string}.INFO.log", logging.INFO, "short"
-    )
-    return logfilename_debug, logfilename_info
+    oar_jobid = oar_jobid if len(oar_jobid) else "None"
+    messages.append(f"OAR_JOB_ID: {oar_jobid}")
 
+    messages.append("--- Python ---")
+    messages.append(f"VENV:    {is_venv()}")
+    messages.append(f"Prefix:    {sys.prefix}")
 
-def dump_dervo_stats(
-    workfolder, path, run_string, lctr, logfilename_debug, logfilename_info
-):
-    # Release previously captured logging records
-    lctr.handle_captured()
-    log.info(inspect.cleandoc(f"""Initialized the logging system!
-        Platform: \t\t{platform_info()}
-        Experiment path: \t{path}
-        Workfolder path: \t{workfolder}
-        --- Python --
-        VENV:\t\t\t{is_venv()}
-        Prefix:\t\t\t{sys.prefix}
-        --- Code ---
-        Experiment: \t\t{run_string}
-        -- Logging --
-        DEBUG logfile: \t\t{logfilename_debug}
-        INFO logfile: \t\t{logfilename_info}
-        """))
-    from pip._internal.operations import freeze
+    messages.append("--- Code ---")
+    messages.append(f"Experiment:    {run_string}")
 
+    log.info("\n".join(messages))
     log.debug("pip freeze: {}".format(";".join(freeze.freeze())))
 
 
@@ -260,6 +261,19 @@ def _hydra_update_config(cfg_routine, workfolder, hydra_params, hydra_groups):
     return cfg_routine
 
 
+def resolve_workfolder_pattern(
+    path: Path, workfolder_pattern: str, co_commit_sha: str
+) -> Path:
+    assert isinstance(workfolder_pattern, str), f"Must be string {workfolder_pattern=}"
+    variables = {
+        "commitsha": co_commit_sha,
+        "node": platform.node(),
+    }
+    workfolder = path.parent / workfolder_pattern.format(**variables)
+    log.info("Workfolder {} resolved to {}".format(workfolder_pattern, workfolder))
+    return workfolder
+
+
 def run_experiment(path, co_commit, add_args):
     """
     Execute the Dervo experiment. Folder structure defines the experiment
@@ -282,14 +296,24 @@ def run_experiment(path, co_commit, add_args):
             co_commit = cfg["_dervo"].get("commit", RAWCOMMIT)
             log.info("No commit passed, setting _dervo.commit = {}".format(co_commit))
         co_commit_sha, repo = get_commit_sha_repo(code_root, co_commit)
-        workfolder = mkdir(path.parent / FOLDER_OUTPUT / co_commit_sha)
+        # workfolder = mkdir(path.parent / FOLDER_OUTPUT / co_commit_sha)
+        workfolder = resolve_workfolder_pattern(
+            path, cfg["_dervo"]["workfolder"], co_commit_sha
+        )
 
     # Setup logging in the workfolder
-    logfilename_debug, logfilename_info = add_logging_filehandlers(workfolder)
-    assert (run_string := cfg["_dervo"].get("run")), "_dervo.run must be defined"
-    dump_dervo_stats(
-        workfolder, path, run_string, lctr, logfilename_debug, logfilename_info
+    id_string = get_experiment_id_string()
+    logging_cfg = cfg["_dervo"]["logging"]
+    logfilehandlers = add_logging_filehandlers(
+        workfolder,
+        id_string,
+        logging_cfg.get("foldername"),
+        logging_cfg.get("handlers", {}),
     )
+    clamp_package_loglevels(logging_cfg.get("clamp_packages", {}))
+    assert (run_string := cfg["_dervo"].get("run")), "_dervo.run must be defined"
+    lctr.handle_captured()  # Release previously captured logging records
+    dump_dervo_stats(workfolder, path, run_string, logfilehandlers)
 
     # Establish code root (clone if necessary)
     if co_commit_sha == RAWCOMMIT:
