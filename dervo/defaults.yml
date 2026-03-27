@@ -5,3 +5,18 @@ _dervo:
         local_submodules: False   # Manually clone submodules, instead of
                                   # checking out from URLs (faster, does not
                                   # require internet, but weird bugs can happen)
+    logging:
+        foldername: LOGS
+        handlers:
+            debug:
+                suffix: DEBUG
+                loglevel: DEBUG
+                formatter: extended
+            info:
+                suffix: INFO
+                loglevel: INFO
+                formatter: short
+        clamp_packages:
+            INFO: [PIL, git, tensorflow, matplotlib, selenium, urllib3, fiona, rasterio]
+
+    workfolder: OUT/{commitsha}

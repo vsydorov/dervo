@@ -1,5 +1,7 @@
+import sys
 import logging
-from typing import Union
+from typing import Union, Tuple
+from dervo.misc import mkdir
 
 log = logging.getLogger(__name__)
 
@@ -18,64 +20,92 @@ reasonable_formatters = {
 }
 
 
-def reasonable_logging_setup(stream_loglevel: int, formatter="extended"):
-    """Create STDOUT stream handler, curtail spam"""
-    if isinstance(formatter, str):
-        formatter = reasonable_formatters[formatter]
+def logging_init(
+    stream_loglevel: int,
+    formatter: Union[str, logging.Formatter] = "extended",
+    stream_name: str = "stderr",
+):
+    """Create initial stream handler"""
+    formatter = parse_formatter(formatter)
+    if stream_name == "stderr":
+        stream = sys.stderr
+    elif stream_name == "stdout":
+        stream = sys.stdout
+    else:
+        raise ValueError(f"Unknown {stream_name=}. Accepted values: stderr, stdout")
     # Get root logger (with NOTSET level)
     logger = logging.getLogger()
     logger.setLevel(logging.NOTSET)
-    # Stream handler takes 'loglevel'
-    handler = logging.StreamHandler()
+    # Init stream handler
+    handler = logging.StreamHandler(stream)
     handler.setFormatter(formatter)
     handler.setLevel(stream_loglevel)
     logger.addHandler(handler)
-    # Prevent some spammy packages from exceeding INFO verbosity
-    spammy_packages = [
-        "PIL",
-        "git",
-        "tensorflow",
-        "matplotlib",
-        "selenium",
-        "urllib3",
-        "fiona",
-        "rasterio",
-    ]
-    for packagename in spammy_packages:
-        logging.getLogger(packagename).setLevel(max(logging.INFO, stream_loglevel))
     return logger
 
 
-def docopt_loglevel(loglevel: Union[str, int]) -> int:
-    """Tries to get int value softly.
-    For parsing docopt argument
-    """
-    try:
-        loglevel_int = int(loglevel)
-    except ValueError:
-        assert isinstance(loglevel, str)
-        loglevel_int = loglevel_str_to_int(loglevel)
-    return loglevel_int
+def parse_loglevel(loglevel_arg) -> Tuple[int, str]:
+    if isinstance(loglevel_arg, str):
+        loglevel_int = logging._checkLevel(loglevel_arg)  # type: ignore[attr-defined]
+        loglevel_str = loglevel_arg
+    elif isinstance(loglevel_arg, int):
+        loglevel_int = loglevel_arg
+        loglevel_str = logging.getLevelName(loglevel_arg)
+    else:
+        raise RuntimeError(f"Can't parse {loglevel_arg=}")
+    return loglevel_int, loglevel_str
 
 
-def loglevel_str_to_int(loglevel: str) -> int:
-    assert isinstance(loglevel, str)
-    return logging._checkLevel(loglevel)  # type: ignore
-
-
-def loglevel_int_to_str(loglevel: int) -> str:
-    assert isinstance(loglevel, int)
-    return logging.getLevelName(loglevel)
-
-
-def add_filehandler(logfilename, level=logging.DEBUG, formatter="extended"):
+def parse_formatter(formatter) -> logging.Formatter:
     if isinstance(formatter, str):
-        formatter = reasonable_formatters[formatter]
-    out_filehandler = logging.FileHandler(str(logfilename))
+        return reasonable_formatters[formatter]
+    if isinstance(formatter, list) and len(formatter) == 2:
+        return logging.Formatter(*formatter)
+    raise ValueError(
+        f"formatter must be a preset name or [fmt, datefmt], got {formatter!r}"
+    )
+
+
+def add_filehandler(logfilepath, loglevel=logging.DEBUG, formatter="extended"):
+    formatter = parse_formatter(formatter)
+    out_filehandler = logging.FileHandler(str(logfilepath))
     out_filehandler.setFormatter(formatter)
-    out_filehandler.setLevel(level)
+    out_filehandler.setLevel(loglevel)
     logging.getLogger().addHandler(out_filehandler)
-    return logfilename
+    return logfilepath
+
+
+def clamp_package_loglevels(limit_packages: dict):
+    """Set minimum log level per package group."""
+    for level, packages in limit_packages.items():
+        loglevel_int = parse_loglevel(level)[0]
+        for pkg in packages:
+            logging.getLogger(pkg).setLevel(loglevel_int)
+
+
+def add_logging_filehandlers(workfolder, id_string, foldername, cfg_handlers):
+    """Create logging file handlers per config."""
+    assert isinstance(
+        logging.getLogger().handlers[0], logging.StreamHandler
+    ), "First handler should be StreamHandler"
+    logfolder = mkdir(workfolder / foldername)
+    handlers = {}
+    for name, h in cfg_handlers.items():
+        if h is None:
+            continue
+        loglevel_int, loglevel_str = parse_loglevel(h["loglevel"])
+        logfilepath = logfolder / "{}.{}.log".format(id_string, h["suffix"])
+        add_filehandler(
+            logfilepath,
+            loglevel_int,
+            h["formatter"],
+        )
+        handlers[name] = {
+            "loglevel_int": loglevel_int,
+            "loglevel_str": loglevel_str,
+            "logfilepath": logfilepath,
+        }
+    return handlers
 
 
 class CaptureLogRecordsHandler(logging.Handler):
@@ -145,4 +175,5 @@ class LogCaptorToRecords(object):
             ]
         for record in self.captured:
             for h in targets:
-                h.handle(record)
+                if record.levelno >= h.level:
+                    h.handle(record)
