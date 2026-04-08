@@ -1,14 +1,16 @@
-import glob
-import re
 import copy
-import os.path
 import logging
-import yaml
+import os.path
+import re
+from glob import glob
 from graphlib import TopologicalSorter
 from pathlib import Path
-from typing import Dict, List, Union, Tuple, Any, Iterator, Optional, Set
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from omegaconf import DictConfig, OmegaConf as OC, open_dict
+import yaml
+from omegaconf import DictConfig
+from omegaconf import OmegaConf as OC
+from omegaconf import open_dict
 
 from dervo.misc import abspath
 
@@ -45,6 +47,7 @@ def resolve_caret_token(token: str, root: Path, cwd: Path) -> Union[str, List[st
       - name_desc            : Sort matches lexically, by descending name.
 
     Supported <select> values
+      - only                 : Take first match, ensure only one exists. (Default)
       - 0, first             : Take first match
       - list                 : Return all matches as a list
     """
@@ -75,9 +78,14 @@ def resolve_caret_token(token: str, root: Path, cwd: Path) -> Union[str, List[st
     if comp_sort is None:
         comp_sort = "mtime_asc"
     if comp_select is None:
-        comp_select = "0"
+        comp_select = "only"
     # ** Sort
-    matches = glob.glob(os.path.normpath(ppath), recursive=True, include_hidden=True)
+    # Older python version dont have include_hidden
+    try:
+        matches = glob(os.path.normpath(ppath), recursive=True, include_hidden=True)
+    except TypeError:
+        matches = glob(os.path.normpath(ppath), recursive=True)
+
     if comp_sort == "name_asc":
         matches = sorted(matches)
     elif comp_sort == "name_desc":
@@ -92,7 +100,10 @@ def resolve_caret_token(token: str, root: Path, cwd: Path) -> Union[str, List[st
             raise RuntimeError(f"Unknown {comp_sort=} in {token=}")
 
     # ** Select
-    if comp_select in ["0", "first"]:
+    if comp_select == "only":
+        assert len(matches) == 1, f"Is not only match for {ppath=} to {comp_select=}"
+        return matches[0]
+    elif comp_select in ["0", "first"]:
         assert len(matches), f"Must have matches for {ppath=} to {comp_select=}"
         return matches[0]
     elif comp_select == "list":
