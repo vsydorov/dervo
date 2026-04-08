@@ -3,32 +3,33 @@ Tools related to experiment organization
 """
 
 import copy
+import importlib
+import inspect
+import logging
 import os
 import os.path
-import inspect
-import sys
-import logging
-import importlib
 import platform
 import random
 import string
 import subprocess
+import sys
 from datetime import datetime
-from typing import Dict, List, Union
 from pathlib import Path
+from typing import Dict, List, Union
 
 import yaml
-from omegaconf import OmegaConf as OC, open_dict
+from omegaconf import OmegaConf as OC
+from omegaconf import open_dict
 from pip._internal.operations import freeze
 
 from dervo.config import build_config_dag_inheritance
 from dervo.git import RAWCOMMIT, get_commit_sha_repo, manage_code_checkout
 from dervo.logging import (
+    LogCaptorToRecords,
     add_logging_filehandlers,
     clamp_package_loglevels,
-    LogCaptorToRecords,
 )
-from dervo.misc import mkdir, abspath
+from dervo.misc import abspath, mkdir
 
 log = logging.getLogger(__name__)
 
@@ -315,7 +316,7 @@ def _check_ddp(args_add):
     return ddp_suffix
 
 
-def run_experiment(path, co_commit, args_add):
+def run_experiment(path, co_commit, compat, args_add):
     """
     Execute the Dervo experiment. Folder structure defines the experiment
     Args:
@@ -403,23 +404,33 @@ def run_experiment(path, co_commit, args_add):
         if inspect.getfile(routine).endswith("hydra/main.py"):
             routine = getattr(routine, "__wrapped__", routine)
 
-    # Force chdir instead of passing workfolder
-    log.info(f"Changing cwd to workfolder: {workfolder}")
-    os.chdir(workfolder)
-
-    # Accomodate optional args_add
-    kwargs_routine = {}
-    if "args_add" in inspect.signature(routine).parameters:
-        kwargs_routine = {"args_add": args_add}
-
-    log.info("- [ Execute experiment routine")
-
     # Set sys.argv for DDP re-launch compatibility
     # Lightning's DDP appends hydra overrides to sys.argv[1:]
     # The appending "-- ---guard" ensures we can catch them
     if "---guard" not in sys.argv:
         sys.argv = sys.argv + ["--", "---guard"]
+
+    # Force chdir instead of passing workfolder
+    log.info(f"Changing cwd to workfolder: {workfolder}")
+    os.chdir(workfolder)
+
+    # Accomodate optional args_add
+    routine_signature = inspect.signature(routine)
+    args_routine = [cfg_routine]
+    kwargs_routine = {}
+    if "args_add" in routine_signature.parameters:
+        kwargs_routine = {"args_add": args_add}
+    # Special mode for older dervo experiments
+    if compat == "0.1":
+        log.info(
+            "Compatability mode with dervo 0.1 3-arg signature enabled by flag.\n"
+            f"Note: detected {routine_signature} signature"
+        )
+        args_routine = (workfolder, cfg_routine, args_add)
+        kwargs_routine = {}
+
+    log.info("- [ Execute experiment routine")
     try:
-        routine(cfg_routine, **kwargs_routine)
+        routine(*args_routine, **kwargs_routine)
     except Exception as err:
         remove_first_loghandler_before_handling_error(err)
