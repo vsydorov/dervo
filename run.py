@@ -11,6 +11,8 @@ Options:
 
     -c <hash, --commit <hash>  Experiment hash to check out.
 
+    --compat <version>         Compatability with old dervo version
+
     Default stream logging:
         --loglvl <level>       Level of logging (str/int). [default: INFO]
         --logform <name>       Formatter preset. [default: shorter]
@@ -18,23 +20,25 @@ Options:
 
     Convention for <args_add>:
         Some tools (like Lightning DDP) rerun the experiment with additional
-        ARGV args. We guard the end of the <args_add> with -- ---guard,
-        and everything after is treated as added by a tool.
+        ARGV args. We extend the argv with ['--', '---guard'] and add special
+        processing for arguments (if any) detected after.
 """
 
 from docopt import docopt
 
 from dervo.experiment import run_experiment
-from dervo.logging import parse_loglevel, logging_init
+from dervo.logging import logging_init, parse_loglevel
 
 
-def main(args: docopt.Dict):
+def main(args):
     loglevel_int, loglevel_str = parse_loglevel(args.get("--loglvl"))
     log = logging_init(loglevel_int, args["--logform"], args["--logstream"])
     log.info("STDOUT loglevel: {}/{}".format(loglevel_int, loglevel_str))
     log.info("|||-------------------------------------------------------|||")
     log.info("    Start of Dervo experiment")
-    run_experiment(args["<path>"], args["--commit"], args["<args_add>"])
+    run_experiment(
+        args["<path>"], args["--commit"], args["--compat"], args["<args_add>"]
+    )
     log.info("    End of Dervo experiment")
     log.info("|||-------------------------------------------------------|||")
 
