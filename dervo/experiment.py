@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Union
 
+import git
 import yaml
 from omegaconf import OmegaConf as OC
 from omegaconf import open_dict
@@ -42,6 +43,69 @@ def is_venv():
     return hasattr(sys, "real_prefix") or (
         hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
     )
+
+
+def _env_type():
+    prefix = Path(sys.prefix)
+    if (prefix / "conda-meta").is_dir():
+        name = os.environ.get("CONDA_DEFAULT_ENV", "")
+        return f"conda ({name})" if name else "conda"
+    if (prefix / "pyvenv.cfg").is_file():
+        cfg = (prefix / "pyvenv.cfg").read_text()
+        return "uv-venv" if "uv" in cfg.lower() else "venv"
+    return "system"
+
+
+def _nvidia_info():
+    try:
+        r = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,driver_version,memory.total",
+                "--format=csv,noheader",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.decode().strip().splitlines()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return []
+
+
+def _dervo_self_info():
+    import dervo
+
+    lines = [f"version: {dervo.__version__}"]
+    try:
+        repo = git.Repo(Path(__file__).parent.parent)
+        sha = repo.head.commit.hexsha[:12]
+        if repo.is_dirty():
+            lines.append(f"commit: {sha}, dirty (see diff in DEBUG)")
+            log.debug("Dervo dirty diff:\n===\n{}\n===".format(repo.git.diff()))
+        else:
+            lines.append(f"commit: {sha}")
+    except Exception:
+        pass
+    return lines
+
+
+def _torch_cuda_info():
+    try:
+        import torch  # type: ignore
+
+        lines = [
+            f"torch {torch.__version__}, CUDA {torch.version.cuda}, "
+            f"available={torch.cuda.is_available()}"
+        ]
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                lines.append(f"  device[{i}]: {torch.cuda.get_device_name(i)}")
+        return lines
+    except ImportError:
+        return []
 
 
 def get_experiment_id_string():
@@ -129,15 +193,25 @@ def dump_dervo_stats(workfolder, path, run_string, logfilehandlers):
     oar_jobid = oar_jobid if len(oar_jobid) else "None"
     messages.append(f"OAR_JOB_ID: {oar_jobid}")
 
+    messages.append("--- Dervo ---")
+    messages.extend(_dervo_self_info())
     messages.append("--- Python ---")
-    messages.append(f"VENV:    {is_venv()}")
-    messages.append(f"Prefix:    {sys.prefix}")
+    messages.append(f"Version:    {sys.version}")
+    messages.append(f"Executable: {sys.executable}")
+    messages.append(f"Env type:   {_env_type()}")
+    nvidia = _nvidia_info()
+    if nvidia:
+        messages.append("--- GPU ---")
+        messages.extend(nvidia)
+    torch_info = _torch_cuda_info()
+    if torch_info:
+        messages.extend(torch_info)
 
     messages.append("--- Code ---")
     messages.append(f"Experiment:    {run_string}")
 
     log.info("\n".join(messages))
-    log.debug("pip freeze: {}".format(";".join(freeze.freeze())))
+    log.debug("pip freeze:\n" + "\n".join(freeze.freeze()))
 
 
 def extend_path_reload_modules(actual_code_root):
@@ -316,7 +390,7 @@ def _check_ddp(args_add):
     return ddp_suffix
 
 
-def run_experiment(path, co_commit, compat, args_add):
+def run_experiment(path, co_commit, args_add):
     """
     Execute the Dervo experiment. Folder structure defines the experiment
     Args:
@@ -421,9 +495,9 @@ def run_experiment(path, co_commit, compat, args_add):
     if "args_add" in routine_signature.parameters:
         kwargs_routine = {"args_add": args_add}
     # Special mode for older dervo experiments
-    if compat == "0.1":
+    if cfg["_dervo"]["compatibility"]["signature_3_args"]:
         log.info(
-            "Compatability mode with dervo 0.1 3-arg signature enabled by flag.\n"
+            "Forcing compatability with old 3-arg signature (workfolder, cfg, args).\n"
             f"Note: detected {routine_signature} signature"
         )
         args_routine = (workfolder, cfg_routine, args_add)

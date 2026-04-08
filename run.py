@@ -11,8 +11,6 @@ Options:
 
     -c <hash, --commit <hash>  Experiment hash to check out.
 
-    --compat <version>         Compatability with old dervo version
-
     Default stream logging:
         --loglvl <level>       Level of logging (str/int). [default: INFO]
         --logform <name>       Formatter preset. [default: shorter]
@@ -36,9 +34,7 @@ def main(args):
     log.info("STDOUT loglevel: {}/{}".format(loglevel_int, loglevel_str))
     log.info("|||-------------------------------------------------------|||")
     log.info("    Start of Dervo experiment")
-    run_experiment(
-        args["<path>"], args["--commit"], args["--compat"], args["<args_add>"]
-    )
+    run_experiment(args["<path>"], args["--commit"], args["<args_add>"])
     log.info("    End of Dervo experiment")
     log.info("|||-------------------------------------------------------|||")
 

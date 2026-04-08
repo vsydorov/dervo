@@ -19,4 +19,7 @@ _dervo:
         clamp_packages:
             INFO: [PIL, git, tensorflow, matplotlib, selenium, urllib3, fiona, rasterio]
 
+    compatibility:
+        signature_3_args: False
+
     workfolder: OUT/{commitsha}
