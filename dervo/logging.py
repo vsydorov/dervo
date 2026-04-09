@@ -1,6 +1,8 @@
-import sys
 import logging
-from typing import Union, Tuple
+import sys
+import time
+from typing import Tuple, Union
+
 from dervo.misc import mkdir
 
 log = logging.getLogger(__name__)
@@ -8,15 +10,15 @@ log = logging.getLogger(__name__)
 reasonable_formatters = {
     "extended": logging.Formatter(
         "%(asctime)s %(name)s %(funcName)s %(levelname)s: %(message)s",
-        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S UTC",
     ),
     "short": logging.Formatter(
-        "%(asctime)s %(name)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S"
+        "%(asctime)s %(name)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S UTC"
     ),
     "shorter": logging.Formatter(
-        "%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S"
+        "%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S UTC"
     ),
-    "shortest": logging.Formatter("%(asctime)s: %(message)s", "%Y-%m-%d %H:%M:%S"),
+    "shortest": logging.Formatter("%(asctime)s: %(message)s", "%Y-%m-%d %H:%M:%S UTC"),
 }
 
 
@@ -36,6 +38,7 @@ def logging_init(
     # Get root logger (with NOTSET level)
     logger = logging.getLogger()
     logger.setLevel(logging.NOTSET)
+    logging.Formatter.converter = time.gmtime
     # Init stream handler
     handler = logging.StreamHandler(stream)
     handler.setFormatter(formatter)

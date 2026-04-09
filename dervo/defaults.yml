@@ -6,6 +6,7 @@ _dervo:
                                   # checking out from URLs (faster, does not
                                   # require internet, but weird bugs can happen)
     logging:
+        file_prefix: "{datetime}_{node}_{uniq6}"
         foldername: LOGS
         handlers:
             debug:
@@ -22,4 +23,4 @@ _dervo:
     compatibility:
         signature_3_args: False
 
-    workfolder: OUT/{commitsha}
+    workfolder: "OUT/{commitsha}"
