@@ -13,6 +13,7 @@ import random
 import string
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Union
@@ -106,6 +107,63 @@ def _torch_cuda_info():
         return lines
     except ImportError:
         return []
+
+
+@dataclass
+class TimeIdentifier:
+    time: datetime
+    rnd10: str
+
+
+def capture_time_id() -> TimeIdentifier:
+    """Capture unique time idenifier (time now and random 10char string)"""
+    time = datetime.utcnow()
+    rnd10 = "".join(random.choices(string.ascii_uppercase, k=10))
+    return TimeIdentifier(time, rnd10)
+
+
+def resolve_experiment_pattern(
+    pattern: str, co_commit_sha: str, time_id: TimeIdentifier
+):
+    """
+    Resolve the pattern that identifies experiment
+
+    Useful for logfile names and experiment workfolder. For example:
+      - Experiments that can be interrupted/resumed :: keep workfolder
+        stable, but record logfiles inside it with different prefixes
+      - One-off experiments :: every new workfolder can be in a new folder
+    """
+    assert isinstance(pattern, str), f"Must be string {pattern=}"
+
+    # TODO: Compute on demand instead
+    substitutions = {
+        "commitsha": co_commit_sha,
+        "node": platform.node(),
+        "datedash": time_id.time.strftime("%Y-%m-%d"),
+        "date": time_id.time.strftime("%Y%m%d"),
+        "timedash": time_id.time.strftime("%H-%M-%S"),
+        "time": time_id.time.strftime("%H%M%S"),
+        "datetime": time_id.time.strftime("%Y%m%dT%H%M%S"),
+        "ms3": time_id.time.strftime("%f")[:3],
+        "rnd3": time_id.rnd10[:3],
+        "uniq6": time_id.time.strftime("%f")[:3] + time_id.rnd10[:3],
+    }
+    resolved = pattern.format_map(substitutions)
+    log.info("{} resolved to {}".format(pattern, resolved))
+    return resolved
+
+
+def resolve_workfolder_pattern(
+    path: Path, workfolder_pattern: str, co_commit_sha: str
+) -> Path:
+    assert isinstance(workfolder_pattern, str), f"Must be string {workfolder_pattern=}"
+    variables = {
+        "commitsha": co_commit_sha,
+        "node": platform.node(),
+    }
+    workfolder = path.parent / workfolder_pattern.format(**variables)
+    log.info("Workfolder {} resolved to {}".format(workfolder_pattern, workfolder))
+    return workfolder
 
 
 def get_experiment_id_string():
@@ -340,19 +398,6 @@ def _hydra_update_config(
     return cfg_routine
 
 
-def resolve_workfolder_pattern(
-    path: Path, workfolder_pattern: str, co_commit_sha: str
-) -> Path:
-    assert isinstance(workfolder_pattern, str), f"Must be string {workfolder_pattern=}"
-    variables = {
-        "commitsha": co_commit_sha,
-        "node": platform.node(),
-    }
-    workfolder = path.parent / workfolder_pattern.format(**variables)
-    log.info("Workfolder {} resolved to {}".format(workfolder_pattern, workfolder))
-    return workfolder
-
-
 def _check_ddp(args_add):
     # Check if some tool (Lightning DDP?) is re-running us with extra argumnets
     ddp_rerun = False
@@ -398,6 +443,8 @@ def run_experiment(path, co_commit, args_add):
         - 'co_commit' if not RAW - check out and run that commit
         - 'args_add' are passed additionally to experiment
     """
+    # Capture the start identified time and a random 3character identifier
+    time_id = capture_time_id()
     # Capture logs, before we establish location for logfiles
     with LogCaptorToRecords(pause="file") as lctr:
         log.info("- CAPTURING: Loglines before system init -")
@@ -413,15 +460,24 @@ def run_experiment(path, co_commit, args_add):
             log.info("No commit passed, setting _dervo.commit = {}".format(co_commit))
         co_commit_sha, repo = get_commit_sha_repo(code_root, co_commit)
         # workfolder = mkdir(path.parent / FOLDER_OUTPUT / co_commit_sha)
-        workfolder = resolve_workfolder_pattern(
-            path, cfg["_dervo"]["workfolder"], co_commit_sha
+        # workfolder = resolve_workfolder_pattern(
+        #     path, cfg["_dervo"]["workfolder"], co_commit_sha
+        # )
+        wpattern = cfg["_dervo"]["workfolder"]
+        workfolder = path.parent / resolve_experiment_pattern(
+            wpattern, co_commit_sha, time_id
         )
+        log.info("Workfolder {} resolved to {}".format(wpattern, workfolder))
 
     ddp_suffix = _check_ddp(args_add)
 
     # Setup logging in the workfolder
-    id_string = get_experiment_id_string() + ddp_suffix
+    # id_string = get_experiment_id_string() + ddp_suffix
     logging_cfg = cfg["_dervo"]["logging"]
+    id_string = resolve_experiment_pattern(
+        logging_cfg.get("file_prefix"), co_commit_sha, time_id
+    )
+    id_string += ddp_suffix
     logfilehandlers = add_logging_filehandlers(
         workfolder,
         id_string,
