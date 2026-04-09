@@ -1,8 +1,8 @@
 # Checking out
-import time
 import logging
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -77,13 +77,15 @@ def get_commit_sha_repo(code_root, co_commit):
     repo = git_repo_query(code_root)
     if co_commit == RAWCOMMIT:
         log.info(f"Commit is {RAWCOMMIT}. Running code from {code_root}")
-        return RAWCOMMIT, None
+        return RAWCOMMIT, RAWCOMMIT, None
     if repo is None:
         log.info(f"No git repo detected. Running code from {code_root}")
-        return RAWCOMMIT, None
+        return RAWCOMMIT, RAWCOMMIT, None
     # Find the canonical commit sha
-    co_commit_sha = git_get_hexsha(repo, co_commit)
-    return co_commit_sha, repo
+    cc_sha = git_get_hexsha(repo, co_commit)
+    # Return also short sha (8 or more if commits)
+    cc_sha8 = repo.git.rev_parse("--short=12", cc_sha)
+    return cc_sha, cc_sha8, repo
 
 
 """

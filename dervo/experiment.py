@@ -123,7 +123,7 @@ def capture_time_id() -> TimeIdentifier:
 
 
 def resolve_experiment_pattern(
-    pattern: str, co_commit_sha: str, time_id: TimeIdentifier
+    pattern: str, cc_sha: str, cc_sha8: str, time_id: TimeIdentifier
 ):
     """
     Resolve the pattern that identifies experiment
@@ -137,13 +137,15 @@ def resolve_experiment_pattern(
 
     # TODO: Compute on demand instead
     substitutions = {
-        "commitsha": co_commit_sha,
+        "cc_sha": cc_sha,
+        "cc_sha8": cc_sha8,
         "node": platform.node(),
         "datedash": time_id.time.strftime("%Y-%m-%d"),
         "date": time_id.time.strftime("%Y%m%d"),
         "timedash": time_id.time.strftime("%H-%M-%S"),
         "time": time_id.time.strftime("%H%M%S"),
         "datetime": time_id.time.strftime("%Y%m%dT%H%M%S"),
+        "datetimedsh": time_id.time.strftime("%Y%m%dT%H-%M-%S"),
         "ms3": time_id.time.strftime("%f")[:3],
         "rnd3": time_id.rnd10[:3],
         "uniq6": time_id.time.strftime("%f")[:3] + time_id.rnd10[:3],
@@ -350,8 +352,8 @@ def _hydra_update_config(
     """
     # Initialise hydra
     log.info(f"Preparing Hydra config.\n{hydra_params=}\n{hydra_groups=}")
-    from hydra import compose, initialize_config_dir
-    from hydra.core.hydra_config import HydraConfig
+    from hydra import compose, initialize_config_dir  # type: ignore
+    from hydra.core.hydra_config import HydraConfig  # type: ignore
 
     # Generate hydra configuration
     initialize_config_dir(
@@ -458,14 +460,10 @@ def run_experiment(path, co_commit, args_add):
         if co_commit is None:
             co_commit = cfg["_dervo"].get("commit", RAWCOMMIT)
             log.info("No commit passed, setting _dervo.commit = {}".format(co_commit))
-        co_commit_sha, repo = get_commit_sha_repo(code_root, co_commit)
-        # workfolder = mkdir(path.parent / FOLDER_OUTPUT / co_commit_sha)
-        # workfolder = resolve_workfolder_pattern(
-        #     path, cfg["_dervo"]["workfolder"], co_commit_sha
-        # )
+        cc_sha, cc_sha8, repo = get_commit_sha_repo(code_root, co_commit)
         wpattern = cfg["_dervo"]["workfolder"]
         workfolder = path.parent / resolve_experiment_pattern(
-            wpattern, co_commit_sha, time_id
+            wpattern, cc_sha, cc_sha8, time_id
         )
         log.info("Workfolder {} resolved to {}".format(wpattern, workfolder))
 
@@ -475,7 +473,7 @@ def run_experiment(path, co_commit, args_add):
     # id_string = get_experiment_id_string() + ddp_suffix
     logging_cfg = cfg["_dervo"]["logging"]
     id_string = resolve_experiment_pattern(
-        logging_cfg.get("file_prefix"), co_commit_sha, time_id
+        logging_cfg.get("file_prefix"), cc_sha, cc_sha8, time_id
     )
     id_string += ddp_suffix
     logfilehandlers = add_logging_filehandlers(
@@ -490,13 +488,13 @@ def run_experiment(path, co_commit, args_add):
     dump_dervo_stats(workfolder, path, run_string, logfilehandlers)
 
     # Establish code root (clone if necessary)
-    if co_commit_sha == RAWCOMMIT:
+    if cc_sha == RAWCOMMIT:
         actual_code_root = code_root
     else:
         log.info("- [ Code checkout:")
         actual_code_root = manage_code_checkout(
             repo,
-            co_commit_sha,
+            cc_sha,
             workfolder,
             code_root,
             cfg["_dervo"]["checkout"]["folder"],
