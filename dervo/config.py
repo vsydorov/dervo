@@ -100,11 +100,10 @@ def resolve_caret_token(token: str, root: Path, cwd: Path) -> Union[str, List[st
             raise RuntimeError(f"Unknown {comp_sort=} in {token=}")
 
     # ** Select
-    if comp_select == "only":
-        assert len(matches) == 1, f"Is not only match for {ppath=} to {comp_select=}"
-        return matches[0]
-    elif comp_select in ["0", "first"]:
+    if comp_select in ["only", "0", "first"]:
         assert len(matches), f"Must have matches for {ppath=} to {comp_select=}"
+        if comp_select == "only":
+            assert len(matches) == 1, f"Too many ({len(matches)} matches for {ppath=}"
         return matches[0]
     elif comp_select == "list":
         return matches
