@@ -547,7 +547,9 @@ def run_experiment(path, co_commit, args_add):
     args_routine = [cfg_routine]
     kwargs_routine = {}
     if "args_add" in routine_signature.parameters:
-        kwargs_routine = {"args_add": args_add}
+        kwargs_routine["args_add"] = args_add
+    if "workfolder" in routine_signature.parameters:
+        kwargs_routine["workfolder"] = workfolder
     # Special mode for older dervo experiments
     if cfg["_dervo"]["compatibility"]["signature_3_args"]:
         log.info(
