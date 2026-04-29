@@ -172,20 +172,25 @@ def find_config_root(start: Path, stopfilename: str) -> Path:
 
 
 def walk_parents(cfg_path: Path, root: Path, stopfilename: str) -> list:
-    """Snake walk: collect same-named cfg files going up from parent dir to root.
-    Returns bottom-up order (nearest parent first, root sentinel last)."""
+    """Snake walk up parent dirs, collecting same-named cfg files (bottom-up).
+
+    Stops when ^inherit is not literally True (the barrier itself is included).
+    On natural completion at root, appends the root sentinel (root/stopfilename).
+    """
     name = cfg_path.name
-    found = []
+    found: list = []
     for folder in cfg_path.parent.parents:
         candidate = folder / name
         if candidate.exists():
             found.append(candidate)
+            raw = OC.load(candidate)
+            if not (isinstance(raw, DictConfig) and raw.get("^inherit") is True):
+                return found  # barrier
         if folder == root:
-            break
-    # Append root sentinel at the end (deepest ancestor = last)
-    sentinel = root / stopfilename
-    if sentinel.exists() and sentinel not in found:
-        found.append(sentinel)
+            sentinel = folder / stopfilename
+            if sentinel.exists() and sentinel not in found:
+                found.append(sentinel)
+            return found
     return found
 
 

@@ -16,7 +16,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 
 import git
 import yaml
@@ -343,7 +343,11 @@ def _query_update_hydra_params(routine, module, cfg) -> Dict[str, str]:
 
 
 def _hydra_update_config(
-    cfg_routine, workfolder, hydra_params, hydra_groups, ddp_suffix
+    cfg_routine,
+    workfolder,
+    hydra_params,
+    hydra_groups,
+    ddp_suffix: Optional[str] = None,
 ):
     """
     NOTE: This pollutes global scope with hydra stuff (GlobalHydra and HydraConfig).
@@ -375,7 +379,7 @@ def _hydra_update_config(
     HydraConfig().set_config(cfg_hydra)
 
     # Separate the internal for hydra config, dump
-    if not ddp_suffix:
+    if ddp_suffix is not None:
         with (workfolder / "CONFIG.hydra.internals.yml").open("w") as f:
             yaml.dump(
                 OC.to_container(cfg_hydra.hydra, resolve=False),
@@ -388,7 +392,7 @@ def _hydra_update_config(
     with open_dict(cfg_hydra):
         del cfg_hydra["hydra"]
 
-    if not ddp_suffix:
+    if ddp_suffix is not None:
         with (workfolder / "CONFIG.hydra.yml").open("w") as f:
             yaml.dump(
                 OC.to_container(cfg_hydra, resolve=False),
@@ -403,7 +407,7 @@ def _hydra_update_config(
 def _check_ddp(args_add):
     # Check if some tool (Lightning DDP?) is re-running us with extra argumnets
     ddp_rerun = False
-    ddp_suffix = ""
+    ddp_suffix = None
     if "---guard" in args_add:
         log.info(f"!!!!! Detected rerun -> Found ---guard. {sys.argv=} {args_add=}")
         # Break into args_add / args_extra on the separator
@@ -475,7 +479,8 @@ def run_experiment(path, co_commit, args_add):
     id_string = resolve_experiment_pattern(
         logging_cfg.get("file_prefix"), cc_sha, cc_sha8, time_id
     )
-    id_string += ddp_suffix
+    if ddp_suffix is not None:
+        id_string += ddp_suffix
     logfilehandlers = add_logging_filehandlers(
         workfolder,
         id_string,
@@ -508,7 +513,7 @@ def run_experiment(path, co_commit, args_add):
 
     # Save the resolved dervo config
     container = OC.to_container(cfg, resolve=True)
-    if not ddp_suffix:
+    if ddp_suffix is not None:
         with (workfolder / "CONFIG.drv.yml").open("w") as f:
             yaml.dump(container, f, default_flow_style=False, sort_keys=False)
         _save_relative_config(workfolder, container, caret_keys)

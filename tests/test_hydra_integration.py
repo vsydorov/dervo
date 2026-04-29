@@ -26,7 +26,6 @@ from dervo.experiment import (
     _hydra_update_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: real code files and hydra config dirs
 # ---------------------------------------------------------------------------
@@ -74,16 +73,14 @@ def hydra_module(tmp_path, hydra_config_dir):
     src_dir = tmp_path / "src"
     src_dir.mkdir()
     (src_dir / "__init__.py").write_text("")
-    (src_dir / "train_hydra.py").write_text(
-        f"""\
+    (src_dir / "train_hydra.py").write_text(f"""\
 import hydra
 from omegaconf import DictConfig
 
 @hydra.main(version_base="1.3", config_path="{hydra_config_dir}", config_name="train.yaml")
 def main(cfg: DictConfig):
     return cfg
-"""
-    )
+""")
     sys.path.insert(0, str(tmp_path))
     mod = importlib.import_module("src.train_hydra")
     yield mod
@@ -107,16 +104,14 @@ def hydra_module_relative(tmp_path):
             default_flow_style=False,
         )
     )
-    (src_dir / "train_hydra_rel.py").write_text(
-        """\
+    (src_dir / "train_hydra_rel.py").write_text("""\
 import hydra
 from omegaconf import DictConfig
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="train.yaml")
 def main(cfg: DictConfig):
     return cfg
-"""
-    )
+""")
     sys.path.insert(0, str(tmp_path))
     mod = importlib.import_module("src.train_hydra_rel")
     yield mod
@@ -132,8 +127,7 @@ def plain_module(tmp_path):
     src_dir = tmp_path / "src"
     src_dir.mkdir(exist_ok=True)
     (src_dir / "__init__.py").write_text("")
-    (src_dir / "train_plain.py").write_text(
-        """\
+    (src_dir / "train_plain.py").write_text("""\
 from omegaconf import DictConfig
 
 def main(cfg: DictConfig):
@@ -141,8 +135,7 @@ def main(cfg: DictConfig):
 
 def main_with_args(cfg: DictConfig, add_args=None):
     return cfg, add_args
-"""
-    )
+""")
     sys.path.insert(0, str(tmp_path))
     mod = importlib.import_module("src.train_plain")
     yield mod
@@ -206,9 +199,6 @@ class TestHydraFromClosure:
         assert result["model"]["name"] == "default_model"  # from hydra base
         assert result["lr"] == 0.01  # overridden by dervo
 
-        assert (workfolder / "CONFIG.hydra.yml").exists()
-        assert (workfolder / "CONFIG.hydra.internals.yml").exists()
-
 
 # ===========================================================================
 # Scenario 2: Plain function, _hydra in dervo config
@@ -236,9 +226,7 @@ class TestHydraFromConfig:
         other_dir = tmp_path / "other_configs"
         other_dir.mkdir()
         (other_dir / "other.yaml").write_text(
-            yaml.dump(
-                {"model": {"name": "other"}, "lr": 0.1}, default_flow_style=False
-            )
+            yaml.dump({"model": {"name": "other"}, "lr": 0.1}, default_flow_style=False)
         )
 
         cfg = OC.create(

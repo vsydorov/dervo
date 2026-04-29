@@ -305,10 +305,9 @@ class TestConfigRoot:
         cfg = linear_tree / "group" / "exp" / "cfg.yml"
         root = find_config_root(cfg.parent, "root_cfg.yml")
         parents = walk_parents(cfg, root, "root_cfg.yml")
-        # Should find group/cfg.yml, then root_cfg.yml
-        assert len(parents) == 2
+        # Should find group/cfg.yml, but not root_cfg.yml (as ^inherit: true is absent)
+        assert len(parents) == 1
         assert parents[0] == linear_tree / "group" / "cfg.yml"
-        assert parents[1] == linear_tree / "root_cfg.yml"
 
 
 # ===========================================================================
@@ -593,29 +592,39 @@ class TestGlobCaretTokens:
         cwd = glob_tree / "group" / "consumer"
         return resolve_caret_token(token, root, cwd)
 
-    def test_default_returns_oldest(self, glob_tree):
-        """No sort/sel → mtime_asc^0 → oldest."""
-        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt")
+    def test_default_only_raises_on_multiple(self, glob_tree):
+        """Default selector is `only` → must error when >1 match."""
+        with pytest.raises(AssertionError, match="Too many"):
+            self._resolve(glob_tree, "^../producer/OUT/*/result.txt")
+
+    def test_only_succeeds_on_single_match(self, glob_tree):
+        """Default `only` selector succeeds when glob yields exactly one match."""
+        r = self._resolve(glob_tree, "^../producer/OUT/aaa/*.txt")
+        assert r.endswith("/aaa/result.txt")
+
+    def test_first_returns_oldest_by_default(self, glob_tree):
+        """`^first` with default sort (mtime_asc) → oldest."""
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^mtime_asc^first")
         assert r.endswith("/aaa/result.txt")
 
     def test_newest(self, glob_tree):
-        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^newest")
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^newest^first")
         assert r.endswith("/bbb/result.txt")
 
     def test_oldest_explicit(self, glob_tree):
-        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^oldest")
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^oldest^first")
         assert r.endswith("/aaa/result.txt")
 
     def test_mtime_desc_is_newest(self, glob_tree):
-        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^mtime_desc")
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^mtime_desc^first")
         assert r.endswith("/bbb/result.txt")
 
     def test_name_asc(self, glob_tree):
-        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_asc")
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_asc^first")
         assert r.endswith("/aaa/result.txt")
 
     def test_name_desc(self, glob_tree):
-        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_desc")
+        r = self._resolve(glob_tree, "^../producer/OUT/*/result.txt^name_desc^first")
         assert r.endswith("/ccc/result.txt")
 
     def test_list_newest(self, glob_tree):
