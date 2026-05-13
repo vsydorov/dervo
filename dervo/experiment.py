@@ -475,6 +475,7 @@ def run_experiment(path, co_commit, args_add):
 
     # Setup logging in the workfolder
     # id_string = get_experiment_id_string() + ddp_suffix
+    logging.captureWarnings(True)
     logging_cfg = cfg["_dervo"]["logging"]
     id_string = resolve_experiment_pattern(
         logging_cfg.get("file_prefix"), cc_sha, cc_sha8, time_id
