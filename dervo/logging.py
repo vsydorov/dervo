@@ -86,12 +86,12 @@ def clamp_package_loglevels(limit_packages: dict):
             logging.getLogger(pkg).setLevel(loglevel_int)
 
 
-def add_logging_filehandlers(workfolder, id_string, foldername, cfg_handlers):
+def add_logging_filehandlers(workfolder, id_string, foldername_logs, cfg_handlers):
     """Create logging file handlers per config."""
     assert isinstance(
         logging.getLogger().handlers[0], logging.StreamHandler
     ), "First handler should be StreamHandler"
-    logfolder = mkdir(workfolder / foldername)
+    logfolder = mkdir(workfolder / foldername_logs)
     handlers = {}
     for name, h in cfg_handlers.items():
         if h is None:

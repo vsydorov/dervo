@@ -20,8 +20,9 @@ from typing import Dict, List, Union, Optional
 
 import git
 import yaml
-from omegaconf import OmegaConf as OC
+from omegaconf import DictConfig, ListConfig, OmegaConf as OC
 from omegaconf import open_dict
+from omegaconf.errors import InterpolationResolutionError
 from pip._internal.operations import freeze
 
 from dervo.config import build_config_dag_inheritance
@@ -34,9 +35,6 @@ from dervo.logging import (
 from dervo.misc import abspath, mkdir
 
 log = logging.getLogger(__name__)
-
-FOLDER_OUTPUT = "OUT"
-FOLDER_LOGS = "LOGS"
 
 
 def is_venv():
@@ -186,7 +184,37 @@ def platform_info():
     return platform_string
 
 
-def _save_relative_config(workfolder: Path, container: dict, caret_keys: dict):
+def _split_config_header(text: str):
+    """Split a leading '# {id}' header line -> (id|None, body)."""
+    head, _, rest = text.partition("\n")
+    if head.startswith("#"):
+        return head.lstrip("#").strip(), rest
+    return None, text
+
+
+def _dump_config_yaml(path: Path, container, id_string: str):
+    """Dump `container` to `path` as YAML with a '# {id_string}' first line.
+
+    If `path` already exists and its body (header excluded) differs, the existing
+    file is archived to '{path.name}.{old_id}.yml' (old_id read from its header)
+    before the new content is written. Identical bodies are left untouched (no
+    rewrite)."""
+    body = yaml.dump(container, default_flow_style=False, sort_keys=False)
+    if path.exists():
+        old_id, old_body = _split_config_header(path.read_text())
+        if old_body == body:
+            return  # unchanged
+        archive = path.with_name(f"{path.name}.{old_id or 'unknown'}.yml")
+        path.rename(archive)
+        log.warning(
+            f"{path.name} changed since last run; archived old -> {archive.name}"
+        )
+    path.write_text(f"# {id_string}\n{body}")
+
+
+def _save_relative_config(
+    folder_cfgdump: Path, container: dict, caret_keys: dict, id_string: str
+):
     """Save config with caret_key paths expressed relative to workfolder."""
     container = copy.deepcopy(container)
     for key, absolute in caret_keys.items():
@@ -196,14 +224,13 @@ def _save_relative_config(workfolder: Path, container: dict, caret_keys: dict):
             obj = obj[part]
         value: Union[str, List[str]]
         if isinstance(absolute, str):
-            value = os.path.relpath(absolute, workfolder)
+            value = os.path.relpath(absolute, folder_cfgdump)
         elif isinstance(absolute, list):
-            value = [os.path.relpath(a, workfolder) for a in absolute]
+            value = [os.path.relpath(a, folder_cfgdump) for a in absolute]
         else:
             raise RuntimeError(f"Wrong type for {absolute=} at {key=}")
         obj[parts[-1]] = value
-    with (workfolder / "CONFIG.drv.relative.yml").open("w") as f:
-        yaml.dump(container, f, default_flow_style=False, sort_keys=False)
+    _dump_config_yaml(folder_cfgdump / "CONFIG.drv.relative.yml", container, id_string)
 
 
 def _help_locate_config(path_: Path, priority=["cfg.yml", "config.yml"]) -> Path:
@@ -330,6 +357,30 @@ def get_hydra_closure_params(func) -> Dict[str, str]:
     return params
 
 
+def _besteffort_resolve(cfg: DictConfig) -> tuple[DictConfig, dict[str, str]]:
+    failed: dict[str, str] = {}
+
+    def walk(node, prefix):
+        if isinstance(node, DictConfig):
+            return {k: leaf(node, k, f"{prefix}{k}") for k in node.keys()}
+        if isinstance(node, ListConfig):
+            return [leaf(node, i, f"{prefix}{i}") for i in range(len(node))]
+        return node
+
+    def leaf(parent, key, dotpath):
+        sub = parent._get_node(key)
+        if isinstance(sub, (DictConfig, ListConfig)):
+            return walk(sub, dotpath + ".")
+        try:
+            return parent[key]
+        except InterpolationResolutionError:
+            value = sub._value()
+            failed[dotpath] = value
+            return value
+
+    return walk(cfg, ""), failed
+
+
 def _query_update_hydra_params(routine, module, cfg) -> Dict[str, str]:
     hydra_params = get_hydra_closure_params(routine)
     if "_hydra" in cfg:
@@ -343,10 +394,12 @@ def _query_update_hydra_params(routine, module, cfg) -> Dict[str, str]:
 
 
 def _hydra_update_config(
-    cfg_routine,
+    cfg_routine: DictConfig,
     workfolder,
+    folder_cfgdump,
     hydra_params,
     hydra_groups,
+    id_string: str,
     ddp_suffix: Optional[str] = None,
 ):
     """
@@ -366,41 +419,40 @@ def _hydra_update_config(
         job_name="dervo",
     )
     hydra_groups_overrides = [f"{k}={v}" for k, v in hydra_groups.items()]
-    cfg_hydra = compose(
+    cfg_hydra: DictConfig = compose(
         config_name=hydra_params["config_name"],
         overrides=hydra_groups_overrides,
         return_hydra_config=True,
     )
     # Merge-in dervo config values
-    cfg_hydra = OC.merge(cfg_hydra, cfg_routine)
+    cfg_hydra_merged = OC.merge(cfg_hydra, cfg_routine)
+    assert isinstance(cfg_hydra_merged, DictConfig)
     # Update output_dir
-    OC.update(cfg_hydra, "hydra.runtime.output_dir", str(workfolder))
+    OC.update(cfg_hydra_merged, "hydra.runtime.output_dir", str(workfolder))
     # Update the global hydra config (unfortunate necessity)
-    HydraConfig().set_config(cfg_hydra)
+    HydraConfig().set_config(cfg_hydra_merged)
 
     # Separate the internal for hydra config, dump
-    if ddp_suffix is not None:
-        with (workfolder / "CONFIG.hydra.internals.yml").open("w") as f:
-            yaml.dump(
-                OC.to_container(cfg_hydra.hydra, resolve=False),
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-            )
+    if ddp_suffix is None:
+        _dump_config_yaml(
+            folder_cfgdump / "CONFIG.hydra.internals.yml",
+            OC.to_container(cfg_hydra_merged.hydra, resolve=False),
+            id_string,
+        )
+    return cfg_hydra_merged
 
-    cfg_hydra = copy.deepcopy(cfg_hydra)
-    with open_dict(cfg_hydra):
-        del cfg_hydra["hydra"]
 
-    if ddp_suffix is not None:
-        with (workfolder / "CONFIG.hydra.yml").open("w") as f:
-            yaml.dump(
-                OC.to_container(cfg_hydra, resolve=False),
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-            )
-    cfg_routine = cfg_hydra
+def _hydra_remove_internals(cfg_hydra_merged, folder_cfgdump, id_string, ddp_suffix):
+    cfg_routine = copy.deepcopy(cfg_hydra_merged)
+    with open_dict(cfg_routine):
+        del cfg_routine["hydra"]
+
+    if ddp_suffix is None:
+        _dump_config_yaml(
+            folder_cfgdump / "CONFIG.hydra.yml",
+            OC.to_container(cfg_routine, resolve=False),
+            id_string,
+        )
     return cfg_routine
 
 
@@ -474,7 +526,6 @@ def run_experiment(path, co_commit, args_add):
     ddp_suffix = _check_ddp(args_add)
 
     # Setup logging in the workfolder
-    # id_string = get_experiment_id_string() + ddp_suffix
     logging.captureWarnings(True)
     logging_cfg = cfg["_dervo"]["logging"]
     id_string = resolve_experiment_pattern(
@@ -485,7 +536,7 @@ def run_experiment(path, co_commit, args_add):
     logfilehandlers = add_logging_filehandlers(
         workfolder,
         id_string,
-        logging_cfg.get("foldername"),
+        logging_cfg.get("foldername_logs"),
         logging_cfg.get("handlers", {}),
     )
     clamp_package_loglevels(logging_cfg.get("clamp_packages", {}))
@@ -513,11 +564,16 @@ def run_experiment(path, co_commit, args_add):
     log.info(f"Actual code root: {actual_code_root}")
 
     # Save the resolved dervo config
-    container = OC.to_container(cfg, resolve=True)
-    if ddp_suffix is not None:
-        with (workfolder / "CONFIG.drv.yml").open("w") as f:
-            yaml.dump(container, f, default_flow_style=False, sort_keys=False)
-        _save_relative_config(workfolder, container, caret_keys)
+    folder_cfgdump = mkdir(workfolder / logging_cfg.get("foldername_cfgdump"))
+    # container = OC.to_container(cfg, resolve=True)
+    resolve_container, resolve_failed = _besteffort_resolve(cfg)
+    if ddp_suffix is None:
+        if len(resolve_failed):
+            log.info(f"Failed to resolve OC keys (maybe hydra will?): {resolve_failed}")
+        _dump_config_yaml(
+            folder_cfgdump / "CONFIG.drv.yml", resolve_container, id_string
+        )
+        _save_relative_config(folder_cfgdump, resolve_container, caret_keys, id_string)
 
     # Properly import the experiment routine
     extend_path_reload_modules(actual_code_root)
@@ -531,8 +587,17 @@ def run_experiment(path, co_commit, args_add):
     hydra_params = _query_update_hydra_params(routine, module, cfg)
     if hydra_params.get("config_name"):
         hydra_groups = cfg.get("_hydra", {}).get("groups", {})
-        cfg_routine = _hydra_update_config(
-            cfg_routine, workfolder, hydra_params, hydra_groups, ddp_suffix
+        cfg_hydra_merged = _hydra_update_config(
+            cfg_routine,
+            workfolder,
+            folder_cfgdump,
+            hydra_params,
+            hydra_groups,
+            id_string,
+            ddp_suffix,
+        )
+        cfg_routine = _hydra_remove_internals(
+            cfg_hydra_merged, folder_cfgdump, id_string, ddp_suffix
         )
         # Try unwrapping if looks hydra-wrapped with @main decorator
         if inspect.getfile(routine).endswith("hydra/main.py"):
