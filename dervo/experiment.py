@@ -212,8 +212,26 @@ def _dump_config_yaml(path: Path, container, id_string: str):
     path.write_text(f"# {id_string}\n{body}")
 
 
+def _relativise_path_under(obj, folder):
+    """In place: rewrite absolute-path leaves located under `folder` to relative."""
+    items = obj.items() if isinstance(obj, dict) else enumerate(obj)
+    for k, v in items:
+        if isinstance(v, (dict, list)):
+            _relativise_path_under(v, folder)
+        elif (
+            isinstance(v, str)
+            and os.path.isabs(v)
+            and os.path.commonpath([v, str(folder)]) == str(folder)
+        ):
+            obj[k] = os.path.relpath(v, folder)
+
+
 def _save_relative_config(
-    folder_cfgdump: Path, container: dict, caret_keys: dict, id_string: str
+    workfolder: Path,
+    folder_cfgdump: Path,
+    container: dict,
+    caret_keys: dict,
+    id_string: str,
 ):
     """Save config with caret_key paths expressed relative to workfolder."""
     container = copy.deepcopy(container)
@@ -230,6 +248,8 @@ def _save_relative_config(
         else:
             raise RuntimeError(f"Wrong type for {absolute=} at {key=}")
         obj[parts[-1]] = value
+    # Can A path under the (per-run) workfolder is only meaningful when relative
+    _relativise_path_under(container, workfolder)
     _dump_config_yaml(folder_cfgdump / "CONFIG.drv.relative.yml", container, id_string)
 
 
@@ -255,7 +275,7 @@ def _help_locate_config(path_: Path, priority=["cfg.yml", "config.yml"]) -> Path
 
 def dump_dervo_stats(workfolder, path, run_string, logfilehandlers):
     messages = []
-    messages.append("Initialized the logging system!")
+    messages.append("Initialised the logging system!")
     messages.append("--- Paths ---")
     messages.append(f"Experiment path:         {path}")
     messages.append(f"Workfolder path:         {workfolder}")
@@ -565,7 +585,11 @@ def run_experiment(path, co_commit, args_add):
 
     # Save the resolved dervo config
     folder_cfgdump = mkdir(workfolder / logging_cfg.get("foldername_cfgdump"))
-    # container = OC.to_container(cfg, resolve=True)
+
+    # Expose workfolder via OC resolver [${workfolder:} or ${workfolder:subpath}]
+    OC.register_new_resolver(
+        "workfolder", lambda sub="": str(workfolder / sub), replace=True
+    )
     resolve_container, resolve_failed = _besteffort_resolve(cfg)
     if ddp_suffix is None:
         if len(resolve_failed):
@@ -573,7 +597,9 @@ def run_experiment(path, co_commit, args_add):
         _dump_config_yaml(
             folder_cfgdump / "CONFIG.drv.yml", resolve_container, id_string
         )
-        _save_relative_config(folder_cfgdump, resolve_container, caret_keys, id_string)
+        _save_relative_config(
+            workfolder, folder_cfgdump, resolve_container, caret_keys, id_string
+        )
 
     # Properly import the experiment routine
     extend_path_reload_modules(actual_code_root)
